@@ -24,13 +24,87 @@ class EmotionDataProcessor:
         """
         return pd.read_csv(file_path)
 
+    def get_unique_emotions(self, df):
+        """
+        Identifies all unique emotions in the dataset.
+
+        Args:
+            df (DataFrame): The dataset.
+
+        Returns:
+            set: A set of unique emotions across all emotion columns.
+        """
+        emotion_cols = ['emotion', 'emotion2', 'emotion3']
+        unique_emotions = set()
+        for col in emotion_cols:
+            unique_emotions.update(df[col].dropna().unique())
+        return unique_emotions
+
+    def generate_emotion_map(self, unique_emotions):
+        """
+        Generates a mapping of emotions to numerical values.
+
+        Args:
+            unique_emotions (set): A set of unique emotions.
+
+        Returns:
+            dict: A dictionary mapping emotions to integers.
+        """
+        return {emotion: idx for idx, emotion in enumerate(sorted(unique_emotions))}
+
     def map_emotions(self, df):
         """
-        Maps emotion columns to numerical values.
+        Maps emotion columns to numerical values using the emotion_map.
+
+        Args:
+            df (DataFrame): The dataset.
+
+        Returns:
+            DataFrame: The dataset with mapped emotion columns.
         """
+        if self.emotion_map is None:
+            unique_emotions = self.get_unique_emotions(df)
+            self.emotion_map = self.generate_emotion_map(unique_emotions)
         for col in ['emotion', 'emotion2', 'emotion3']:
             df[f'target_{col}'] = df[col].map(self.emotion_map)
         return df
+
+    def count_emotion_occurrences(self, df):
+        """
+        Counts the occurrences of each emotion in the dataset.
+
+        Args:
+            df (DataFrame): The dataset.
+
+        Returns:
+            dict: A dictionary with emotion counts.
+        """
+        emotion_cols = ['emotion', 'emotion2', 'emotion3']
+        all_emotions = df[emotion_cols].values.flatten()
+        all_emotions = [e for e in all_emotions if pd.notna(e)]
+        return pd.Series(all_emotions).value_counts().to_dict()
+
+    def fill_missing_utterances(self, df):
+        """
+        Fills missing values in the 'Utterances' column with 'missing'.
+
+        Args:
+            df (DataFrame): The dataset.
+
+        Returns:
+            DataFrame: The dataset with filled 'Utterances' column.
+        """
+        df['Utterances'] = df['Utterances'].fillna("missing")
+        return df
+
+
+    # def map_emotions(self, df):
+    #     """
+    #     Maps emotion columns to numerical values.
+    #     """
+    #     for col in ['emotion', 'emotion2', 'emotion3']:
+    #         df[f'target_{col}'] = df[col].map(self.emotion_map)
+    #     return df
 
     def fill_missing_emotions(self, df):
         """

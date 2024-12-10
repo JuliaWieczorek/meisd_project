@@ -1,10 +1,10 @@
 import numpy as np
 import unittest
 import torch
-from data_dir.data_preparation import EmotionDataProcessor
-from data_dir.dataset import EmotionDataset
-from data_dir.model import EmotionTagger
-from data_dir.training import ModelTrainer
+from project.data_preparation import EmotionDataProcessor
+from project.dataset import EmotionDataset
+from project.model import EmotionTagger
+from project.training import ModelTrainer
 from transformers import BertTokenizer
 from torch.utils.data import DataLoader
 
@@ -20,7 +20,7 @@ class TestEmotionModel(unittest.TestCase):
         }
         cls.processor = EmotionDataProcessor(emotion_map=emotion_map, test_size=0.3, random_state=42)
         cls.tokenizer = BertTokenizer.from_pretrained('bert-base-cased')
-        cls.train_df, cls.val_df, cls.test_df, cls.mlb = cls.processor.process('D:/julixus/MEISD/meisd_project/MEISD/MEISD_text.csv')
+        cls.train_df, cls.val_df, cls.test_df, cls.mlb = cls.processor.process('D:/julixus/data/meisd_project/data/MEISD_text.csv')
 
         # Przygotowanie datasetów i dataloaderów
         cls.train_dataset = EmotionDataset(cls.train_df, cls.tokenizer, MAX_LEN=50)
