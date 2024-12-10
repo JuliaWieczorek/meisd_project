@@ -4,7 +4,7 @@ from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import MultiLabelBinarizer
 
 class EmotionDataProcessor:
-    def __init__(self, emotion_map, test_size=0.3, random_state=42):
+    def __init__(self, emotion_map, sentiment_map, test_size=0.3, random_state=42):
         """
         Initializes the EmotionDataProcessor with configuration.
 
@@ -14,6 +14,7 @@ class EmotionDataProcessor:
             random_state (int): Random seed for reproducibility.
         """
         self.emotion_map = emotion_map
+        self.sentiment_map = sentiment_map
         self.test_size = test_size
         self.random_state = random_state
         self.mlb = MultiLabelBinarizer()
@@ -65,8 +66,33 @@ class EmotionDataProcessor:
         if self.emotion_map is None:
             unique_emotions = self.get_unique_emotions(df)
             self.emotion_map = self.generate_emotion_map(unique_emotions)
-        for col in ['emotion', 'emotion2', 'emotion3']:
+
+        emotion_columns = ['emotion', 'emotion2', 'emotion3']
+
+        for col in emotion_columns:
             df[f'target_{col}'] = df[col].map(self.emotion_map)
+        return df
+
+    def map_sentiment(self, df, sentiment_column='sentiment'):
+        """
+        Maps sentiment values to numeric labels (1: positive, 0: neutral, -1: negative).
+
+        Parameters:
+            df (pd.DataFrame): The input DataFrame containing the sentiment column.
+            sentiment_column (str): The name of the column containing sentiment labels.
+
+        Returns:
+            pd.DataFrame: A DataFrame with the sentiment column mapped to numeric values.
+        """
+
+        # Convert the list of tuples into a dictionary for mapping
+        if self.sentiment_map is not None:
+            sentiment_map = dict(self.sentiment_map)  # Convert list of tuples to dictionary
+        else:
+            sentiment_map = {}
+
+        # Map sentiment values to numeric labels
+        df[sentiment_column] = df[sentiment_column].map(sentiment_map)
         return df
 
     def count_emotion_occurrences(self, df):
@@ -97,21 +123,22 @@ class EmotionDataProcessor:
         df['Utterances'] = df['Utterances'].fillna("missing")
         return df
 
-
-    # def map_emotions(self, df):
-    #     """
-    #     Maps emotion columns to numerical values.
-    #     """
-    #     for col in ['emotion', 'emotion2', 'emotion3']:
-    #         df[f'target_{col}'] = df[col].map(self.emotion_map)
-    #     return df
-
     def fill_missing_emotions(self, df):
         """
-        Fills missing values in emotion columns using forward and backward fill.
+        Fills missing values in emotion columns using forward and backward fill,
+        with additional logic to fill rows with exactly 1 NaN value by filling
+        it with the other value in the same row.
         """
         emotion_cols = [col for col in df.columns if col.startswith('target_')]
-        df[emotion_cols] = df[emotion_cols].apply(lambda row: row.bfill().ffill(), axis=1)
+
+        def custom_fill(row):
+            if row.isna().sum() == 2 and row.count() == 1:
+                row = row.fillna(row.dropna().iloc[0])
+            elif row.isna().sum() == 1 and row.count() == 2:
+                row = row.fillna(row.dropna().iloc[0])
+            return row
+
+        df[emotion_cols] = df[emotion_cols].apply(custom_fill, axis=1)
         return df
 
     def combine_emotions(self, df):
