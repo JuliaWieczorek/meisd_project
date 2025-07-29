@@ -14,9 +14,9 @@ from nltk.corpus import wordnet
 # -------------------------
 # CONFIG
 # -------------------------
-MEISD_PATH = 'C:/Users/juwieczo/DataspellProjects/meisd_project/data/filtered_negative_MEISD_intensity_max_first_25_conv.csv'
-ESCONV_PATH = 'C:/Users/juwieczo/DataspellProjects/meisd_project/data/ESConv.json'
-LLAMA_PATH = 'C:/Users/juwieczo/DataspellProjects/meisd_project/chatbot/llama-2-7b-chat.Q4_K_M.gguf'
+MEISD_PATH = '/data/filtered_negative_MEISD_intensity_max_first_25_conv.csv'
+ESCONV_PATH = '/data/ESConv.json'
+LLAMA_PATH = '/chatbot/llama-2-7b-chat.Q4_K_M.gguf'
 
 # -------------------------
 # 1. Load MEISD data and label it binary
@@ -182,10 +182,10 @@ def evaluate_model(df, label_column='label'):
 # 8. Run experiments
 # -------------------------
 print("Running classic augmentation...")
-df_classic = augment_binary_data_percent(original_df, 'label', lambda t, n: augment_text(t, n, mode='classic'), augment_percent=20)
+df_classic = augment_binary_data_percent(original_df, 'label', lambda t, n: augment_text(t, n, mode='classic'), augment_percent=70)
 
 print("Running LLM-based augmentation...")
-df_llm = augment_binary_data_percent(original_df, 'label', lambda t, n: augment_text(t, n, mode='llm'), augment_percent=20)
+df_llm = augment_binary_data_percent(original_df, 'label', lambda t, n: augment_text(t, n, mode='llm'), augment_percent=70)
 
 classic_metrics = evaluate_model(df_classic)
 llm_metrics = evaluate_model(df_llm)
@@ -208,4 +208,10 @@ results_df = pd.DataFrame([
 print("\n=== Augmentation Comparison Results ===")
 print(results_df)
 
-results_df.to_csv("augmentation_comparison_results.csv", index=False)
+results_df.to_csv("augmentation_comparison_results_70.csv", index=False)
+
+# -------------------------
+# 10. Save augmented datasets to Excel
+# -------------------------
+df_classic.to_excel("augmented_dataset_classic_70percent.xlsx", index=False)
+df_llm.to_excel("augmented_dataset_llm_70percent.xlsx", index=False)
