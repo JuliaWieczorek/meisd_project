@@ -32,8 +32,8 @@ from sklearn.metrics import confusion_matrix
 
 
 DEFAULTS = {
-    "max_len": 100,
-    "batch_size": 16,  # Zmniejszono batch size
+    "max_len": 36, #100,
+    "batch_size": 4, #16,  # Zmniejszono batch size
     "epochs_MEISD": 1,
     "epochs_ESConv": 1,
     "learning_rate_meisd": 5e-6,  # Zmniejszono learning rate
@@ -706,8 +706,8 @@ def run_esconv_finetune_only(esconv_path, meisd_model_path, config):
     print("ESConv fine-tuning completed successfully!")
 
 def run_full_experiment(config, variants):
-    meisd_dir = "C:/Users/juwieczo/DataspellProjects/meisd_project/pipeline/data_preparation"
-    esconv_path = "C:/Users/juwieczo/DataspellProjects/meisd_project/data/esconv_both_parts.csv"
+    meisd_dir = "D:/julixus/meisd_project/pipeline/data_preparation"
+    esconv_path = "D:/julixus/meisd_project/data/esconv_both_parts.csv"
 
     for variant_name, meisd_filename in variants.items():
         print(f"\n\n{'='*80}")
