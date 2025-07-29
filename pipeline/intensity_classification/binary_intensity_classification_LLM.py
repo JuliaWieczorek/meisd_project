@@ -14,6 +14,8 @@ import json
 import random
 import sys
 import datetime
+from pathlib import Path
+import csv
 
 
 import numpy as np
@@ -30,12 +32,14 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 from sklearn.metrics import confusion_matrix
 
+print("CUDA available:", torch.cuda.is_available())
+print("GPU name:", torch.cuda.get_device_name(0) if torch.cuda.is_available() else "No GPU")
 
 DEFAULTS = {
-    "max_len": 100,
-    "batch_size": 16,  # Zmniejszono batch size
-    "epochs_MEISD": 1,
-    "epochs_ESConv": 1,
+    "max_len": 32, #100,
+    "batch_size": 4,  #16,  # Zmniejszono batch size
+    "epochs_MEISD": 1, #15,
+    "epochs_ESConv": 1, #3,
     "learning_rate_meisd": 5e-6,  # Zmniejszono learning rate
     "learning_rate_esconv": 2e-6,  # Jeszcze mniejszy dla fine-tuningu
     "dropout": 0.5,  # Zwiększono dropout
@@ -353,7 +357,7 @@ def train_model(model, train_loader, val_loader, optimizer, criterion, scheduler
     print(f"Training {tag} completed. Best validation loss: {best_val_loss:.4f}, Best F1: {best_f1:.4f}")
     return logs
 
-def evaluate(model, loader, device, tag):
+def evaluate(model, loader, device, tag, config=None):
     model.eval()
     all_preds, all_labels = [], []
     all_probs = []
@@ -391,16 +395,16 @@ def evaluate(model, loader, device, tag):
         texts = [""] * len(all_labels)  # fallback
 
     # Zapisz predykcje i uruchom analizę
-    df = save_predictions(texts, all_labels, all_preds, all_probs, tag, output_dir="outputs")
-    analyze_predictions(df, tag, output_dir="outputs")
+    df = save_predictions(texts, all_labels, all_preds, all_probs, tag, output_dir=config["output_dir"])
+    analyze_predictions(df, tag, output_dir=config["output_dir"])
 
     return report
 
 def save_predictions(texts, labels, preds, probs, tag, output_dir="outputs"):
     df = pd.DataFrame({
         "text": texts,
-        "label": labels,
-        "prediction": preds,
+        "label": np.array(labels).astype(int).flatten(),
+        "prediction": np.array(preds).astype(int).flatten(),
         "confidence": probs,
         "correct": [int(p == l) for p, l in zip(preds, labels)]
     })
@@ -510,7 +514,7 @@ def run_pipeline(meisd_path, esconv_path, config):
     print("Evaluating best MEISD model:")
     print("-"*30)
     model.load_state_dict(torch.load(f"{config['output_dir']}/best_model_MEISD.pt"))
-    evaluate(model, val_loader, device, tag="MEISD")
+    evaluate(model, val_loader, device, tag="MEISD", config=config)
 
     # Phase 2: Fine-tune on ESConv
     print("\n" + "="*50)
@@ -556,7 +560,7 @@ def run_pipeline(meisd_path, esconv_path, config):
     print("Evaluating best ESConv model:")
     print("-"*30)
     model.load_state_dict(torch.load(f"{config['output_dir']}/best_model_ESConv.pt"))
-    evaluate(model, val_loader, device, tag="ESConv")
+    evaluate(model, val_loader, device, tag="ESConv", config=config)
 
     # Save logs
     log_file = f"{config['output_dir']}/training_log.txt"
@@ -688,7 +692,15 @@ def run_esconv_finetune_only(esconv_path, meisd_model_path, config):
     print("Evaluating best ESConv fine-tuned model:")
     print("-"*30)
     model.load_state_dict(torch.load(f"{config['output_dir']}/best_model_ESConv.pt"))
-    evaluate(model, val_loader, device, tag="ESConv_finetune")
+    metrics = evaluate(model, val_loader, device, tag="ESConv_finetune", config=config)
+
+    append_to_summary(
+        tag="ESConv_finetune_only",
+        dataset_name="ESConv",
+        metrics=metrics,
+        model_path=f"{config['output_dir']}/best_model_ESConv.pt",
+        output_dir=config["output_dir"]
+    )
 
     # Save logs
     log_file = f"{config['output_dir']}/esconv_finetune_only_log.txt"
@@ -704,6 +716,55 @@ def run_esconv_finetune_only(esconv_path, meisd_model_path, config):
 
     print(f"\nFine-tuning logs saved to: {log_file}")
     print("ESConv fine-tuning completed successfully!")
+
+
+def append_to_summary(tag, dataset_name, metrics, model_path, output_dir):
+    timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    summary_dir = Path(output_dir) / "summary"
+    summary_dir.mkdir(parents=True, exist_ok=True)
+
+    summary_csv = summary_dir / "summary.csv"
+    summary_json = summary_dir / "summary.json"
+    summary_xlsx = summary_dir / "summary.xlsx"
+
+    # Prepare one row of results
+    record = {
+        "tag": tag,
+        "dataset": dataset_name,
+        "accuracy": metrics.get("accuracy"),
+        "f1_macro": metrics.get("f1_macro"),
+        "precision_macro": metrics.get("precision_macro"),
+        "recall_macro": metrics.get("recall_macro"),
+        "timestamp": timestamp,
+        "model_path": str(model_path),
+    }
+
+    # Append to CSV
+    write_header = not summary_csv.exists()
+    with open(summary_csv, "a", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=record.keys())
+        if write_header:
+            writer.writeheader()
+        writer.writerow(record)
+
+    # Append to JSON
+    data = []
+    if summary_json.exists():
+        with open(summary_json, "r", encoding="utf-8") as jf:
+            try:
+                data = json.load(jf)
+            except json.JSONDecodeError:
+                data = []
+
+    data.append(record)
+    with open(summary_json, "w", encoding="utf-8") as jf:
+        json.dump(data, jf, indent=4)
+
+    # Write Excel (overwrite each time from JSON)
+    df = pd.DataFrame(data)
+    df.to_excel(summary_xlsx, index=False)
+
 
 def run_full_experiment(config, variants):
     meisd_dir = "C:/Users/juwieczo/DataspellProjects/meisd_project/pipeline/data_preparation"
@@ -739,11 +800,11 @@ if __name__ == "__main__":
 
     print("Running full experiment across all augmentation variants...")
     variants = {
-        "LLM":        "esconv_enhanced_llm_augmentation_70percent_balanced.xlsx",
-        "Mixed":      "esconv_mixed_augmentation_70percent_balanced.xlsx",
-        "NLP":        "esconv_nlp_augmentation_70percent_balanced.xlsx",
-        "NLP-LLM":    "esconv_llm_nlp_augmentation_70percent_balanced.xlsx",
-        "Classical":  "esconv_classical_augmentation_70percent_balanced.xlsx"
+        #"LLM":        "esconv_enhanced_llm_augmentation_70percent_balanced.xlsx",
+        "Mixed":      "esconv_enhanced_mixed_augmentation_70percent_balanced.xlsx",
+        "NLP":        "esconv_enhanced_nlp_augmentation_70percent_balanced.xlsx",
+        "NLP-LLM":    "esconv_enhanced_llm_nlp_augmentation_70percent_balanced.xlsx",
+        "Classical":  "esconv_enhanced_classical_augmentation_70percent_balanced.xlsx"
     }
 
     try:
@@ -758,7 +819,7 @@ if __name__ == "__main__":
 
     # Warunek: między północą a 6:59 rano
     if 0 <= current_hour < 7:
-        print("⏰ Jest między 00:00 a 07:00 – komputer zostanie wyłączony za 1 minutę...")
+        print("Jest między 00:00 a 07:00 – komputer zostanie wyłączony za 1 minutę...")
         time.sleep(60)
         os.system("shutdown /s /t 1")
     else:
