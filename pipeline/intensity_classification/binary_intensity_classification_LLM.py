@@ -36,10 +36,10 @@ print("CUDA available:", torch.cuda.is_available())
 print("GPU name:", torch.cuda.get_device_name(0) if torch.cuda.is_available() else "No GPU")
 
 DEFAULTS = {
-    "max_len": 32, #100,
-    "batch_size": 4,  #16,  # Zmniejszono batch size
-    "epochs_MEISD": 1, #15,
-    "epochs_ESConv": 1, #3,
+    "max_len": 100,
+    "batch_size": 16,  # Zmniejszono batch size
+    "epochs_MEISD": 15,
+    "epochs_ESConv": 3,
     "learning_rate_meisd": 5e-6,  # Zmniejszono learning rate
     "learning_rate_esconv": 2e-6,  # Jeszcze mniejszy dla fine-tuningu
     "dropout": 0.5,  # Zwiększono dropout
@@ -229,6 +229,8 @@ def load_data(file_path, dataset_type="ESConv"):
     else:
         df = pd.read_csv(file_path, encoding='utf-8', on_bad_lines='skip')
 
+    df.columns = df.columns.str.strip().str.lower()
+    print("Dostępne kolumny:", df.columns.tolist())
     df = df[['conversation', 'label']].dropna()
 
     # Mapowanie na binarne labele
@@ -800,11 +802,12 @@ if __name__ == "__main__":
 
     print("Running full experiment across all augmentation variants...")
     variants = {
-        #"LLM":        "esconv_enhanced_llm_augmentation_70percent_balanced.xlsx",
-        "Mixed":      "esconv_enhanced_mixed_augmentation_70percent_balanced.xlsx",
-        "NLP":        "esconv_enhanced_nlp_augmentation_70percent_balanced.xlsx",
-        "NLP-LLM":    "esconv_enhanced_llm_nlp_augmentation_70percent_balanced.xlsx",
-        "Classical":  "esconv_enhanced_classical_augmentation_70percent_balanced.xlsx"
+        # "LLM":        "esconv_enhanced_llm_augmentation_70percent_balanced.xlsx",
+        # "Mixed":      "esconv_enhanced_mixed_augmentation_70percent_balanced.xlsx",
+        # "NLP":        "esconv_enhanced_nlp_augmentation_70percent_balanced.xlsx",
+        # "NLP-LLM":    "esconv_enhanced_llm_nlp_augmentation_70percent_balanced.xlsx",
+        # "Classical":  "esconv_enhanced_classical_augmentation_70percent_balanced.xlsx",
+        "Original":     "filtered_negative_MEISD_intensity_max_first_25_conv.csv"
     }
 
     try:
