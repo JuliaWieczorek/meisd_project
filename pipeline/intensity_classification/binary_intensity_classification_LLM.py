@@ -769,8 +769,8 @@ def append_to_summary(tag, dataset_name, metrics, model_path, output_dir):
 
 
 def run_full_experiment(config, variants):
-    meisd_dir = "C:/Users/juwieczo/DataspellProjects/meisd_project/pipeline/data_preparation"
-    esconv_path = "C:/Users/juwieczo/DataspellProjects/meisd_project/data/esconv_both_parts.csv"
+    meisd_dir = "D:/julixus/meisd_project/pipeline/data_preparation"
+    esconv_path = "D:/julixus/meisd_project/data/esconv_both_parts.csv"
 
     for variant_name, meisd_filename in variants.items():
         print(f"\n\n{'='*80}")
