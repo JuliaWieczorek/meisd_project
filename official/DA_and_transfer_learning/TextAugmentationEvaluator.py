@@ -515,7 +515,7 @@ def example_usage():
 
 
 # Example data
-    ESCONV_PATH = 'C:/Users/juwieczo/DataspellProjects/meisd_project/data/esconv_both_parts.csv'
+    ESCONV_PATH = '/data/esconv_both_parts.csv'
     MEISD_PATH = 'C:/Users/juwieczo/DataspellProjects/meisd_project/data/filtered_negative_MEISD_intensity_max_first_25_conv.csv'
 
     AUGMENTED_FILES = {

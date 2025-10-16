@@ -1721,7 +1721,7 @@ def main():
 
     # Ścieżki do plików
     ESCONV_PATH = 'C:/Users/juwieczo/DataspellProjects/meisd_project/data/esconv_both_parts.csv'
-    MEISD_PATH = 'C:/Users/juwieczo/DataspellProjects/meisd_project/data/filtered_negative_MEISD_intensity_max_first_25_conv.csv'
+    MEISD_PATH = 'C:/Users/juwieczo/DataspellProjects/meisd_project/pipeline/data_preparation/filtered_negative_MEISD_intensity_max_first_25_conv.csv'
 
     # Ścieżki do zaugmentowanych datassetów
     AUGMENTED_FILES = {
