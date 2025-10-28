@@ -82,7 +82,7 @@ def convert_to_onehot(input_csv, output_csv):
 
 # Przykładowe użycie
 if __name__ == "__main__":
-    input_file = "C:/Users/juwieczo/DataspellProjects/meisd_project/pipeline/EMOTIA/EMOTIA-DA/outputs/multilabel_augmented_llm.csv"  # Twój augmentowany plik
+    input_file = "C:/Users/juwieczo/DataspellProjects/meisd_project/data/ESConv_balanced_expanded_2D.csv"  # Twój augmentowany plik
     output_file = "C:/Users/juwieczo/DataspellProjects/meisd_project/pipeline/EMOTIA/EMOTIA-DA/outputs/multilabel_augmented_onehot.csv"
 
     df_converted = convert_to_onehot(input_file, output_file)

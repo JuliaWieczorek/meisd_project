@@ -1,4 +1,6 @@
 """
+multi-task single-emotion classification (emocja + intensywność)
+@author: Julia Wieczorek
 Multi-task classifier - IMPROVED VERSION
 New improvements:
 - Fixed duplicate loss_fns bug
@@ -6,6 +8,21 @@ New improvements:
 - Integrated Focal Loss for rare emotions
 - Added gradient accumulation option
 - Better optimizer configuration
+
+
+model jest architektonicznie multi-task + multi-label,
+ale dane, które mu dajesz, wymuszają zachowanie multi-task single-emotion.
+
+Czyli:
+jedna głowa uczy się sentimentu (3 klasy),
+druga uczy się emocji (7 możliwych, ale tylko 1 aktywna na próbkę),
+trzecia uczy się intensywności (dla każdej z 7 emocji, ale tylko jedna aktywna).
+
+
+-automatyczne wykrywanie trybu (multi-label / single-emotion)
+-dynamiczny dobór strat i predykcji
+-pomiar czasu działania
+-raporty i zapis wyników
 """
 
 import time
@@ -164,7 +181,12 @@ def load_multitask_data(csv_path):
     for idx, row in df.iterrows():
         # Get text
         text_val = str(row[text_col]).strip()
+        if (not text_val or len(text_val) < 5) and 'original' in df.columns:
+            fallback_val = str(row.get('original', '')).strip()
+            if len(fallback_val) >= 5:
+                text_val = fallback_val
 
+    # Jeśli nadal brak tekstu — pomijamy wiersz
         if not text_val or len(text_val) < 5:
             skipped += 1
             continue
@@ -214,7 +236,39 @@ def load_multitask_data(csv_path):
     print(f"   Sentiment distribution: {np.bincount(sentiments)}")
     print(f"   Emotion presence (any): {emotion_matrix.sum(axis=1).mean():.2f} avg per sample")
 
-    return texts, np.array(sentiments, dtype=np.int64), emotion_matrix, intensity_matrix, emotion_names
+    # -------------------------
+    # 📊 Statystyka współwystępowania emocji
+    # -------------------------
+    emotion_counts = emotion_matrix.sum(axis=1)
+
+    single_label_ratio = np.mean(emotion_counts <= 1)
+    multi_label_mode = single_label_ratio < 0.95  # jeśli >5% ma wiele emocji → multi-label
+
+    mode_type = "multi-label" if multi_label_mode else "single-emotion"
+    print(f"\nDetected emotion labeling mode: {mode_type.upper()}")
+
+
+    one_emotion = np.sum(emotion_counts == 1)
+    two_emotions = np.sum(emotion_counts == 2)
+    multi_emotions = np.sum(emotion_counts >= 3)
+
+    print("\nEmotion co-occurrence stats:")
+    print(f"   1 emotion present     : {one_emotion} samples ({100*one_emotion/len(emotion_counts):.1f}%)")
+    print(f"   2 emotions present    : {two_emotions} samples ({100*two_emotions/len(emotion_counts):.1f}%)")
+    print(f"   3+ emotions present   : {multi_emotions} samples ({100*multi_emotions/len(emotion_counts):.1f}%)")
+
+    # -------------------------
+    # Średnia intensywność emocji
+    # -------------------------
+    if intensity_matrix.size > 0:
+        avg_intensity_per_emotion = intensity_matrix.mean(axis=0)
+        avg_intensity_all = intensity_matrix[intensity_matrix > 0].mean() if (intensity_matrix > 0).any() else 0
+        print("\nAverage emotion intensity (0=low, 1=medium, 2=high):")
+        for ename, avg_val in zip(emotion_names, avg_intensity_per_emotion):
+            print(f"   {ename:15s}: {avg_val:.2f}")
+        print(f"   Overall intensity average: {avg_intensity_all:.2f}")
+
+    return texts, np.array(sentiments, dtype=np.int64), emotion_matrix, intensity_matrix, emotion_names, mode_type
 
 # -------------------------
 # Dataset
@@ -374,13 +428,40 @@ def train_epoch(model, loader, optim, scheduler, device, loss_fns, weights, conf
             all_sent_preds.extend(sent_preds.tolist())
             all_sent_labels.extend(sentiments.cpu().numpy().tolist())
 
-            em_preds = (torch.sigmoid(e_logits) >= 0.5).long().cpu().numpy()
+            #em_preds = (torch.sigmoid(e_logits) >= 0.5).long().cpu().numpy()
+            # if e_logits.shape[1] > 1 and emotions.ndim == 2 and emotions.sum(dim=1).max() > 1:
+            #     # Multi-label case
+            #     em_preds = (torch.sigmoid(e_logits) >= 0.5).long().cpu().numpy()
+            # else:
+            #     # Single-emotion case
+            #     em_preds = torch.argmax(e_logits, dim=1).cpu().numpy().reshape(-1, 1)
+
+            # Zawsze trzymaj wymiary takie same jak emotions
+            if emotions.shape[1] > 1:
+                # Multi-label or one-hot encoded emotion matrix (B, num_emotions)
+                em_preds = (torch.sigmoid(e_logits) >= 0.5).long().cpu().numpy()
+            else:
+                # Truly single column (B,)
+                em_preds = torch.argmax(e_logits, dim=1).cpu().numpy().reshape(-1, 1)
+
+
             all_emotion_preds.extend(em_preds.tolist())
             all_emotion_labels.extend(emotions.long().cpu().numpy().tolist())
 
             int_preds = torch.argmax(i_logits_resh, dim=2).cpu().numpy()
             all_int_preds.extend(int_preds.tolist())
             all_int_labels.extend(intensities.cpu().numpy().tolist())
+
+        # --- Sanity check: ensure matching lengths before computing metrics ---
+    for name, preds, labels in [
+        ("sentiment", all_sent_preds, all_sent_labels),
+        ("emotion", all_emotion_preds, all_emotion_labels),
+        ("intensity", all_int_preds, all_int_labels)]:
+        if len(preds) != len(labels):
+            print(f"[Warning] {name} preds ({len(preds)}) != labels ({len(labels)}); trimming to shortest.")
+            min_len = min(len(preds), len(labels))
+            preds[:] = preds[:min_len]
+            labels[:] = labels[:min_len]
 
     avg_loss = running_loss / len(loader)
 
@@ -493,7 +574,9 @@ def run_pipeline(csv_path, config):
     print("Loading and validating data...")
     print("="*60)
 
-    texts, sentiments, emotions, intensities, emotion_names = load_multitask_data(csv_path)
+    texts, sentiments, emotions, intensities, emotion_names, mode_type = load_multitask_data(csv_path)
+    print(f"\nTraining mode automatically set to: {mode_type.upper()}")
+
     num_emotions = len(emotion_names)
 
     # Split data
@@ -530,6 +613,16 @@ def run_pipeline(csv_path, config):
     print(f"Device: {device}")
 
     bert_model = BertModel.from_pretrained(config['bert_model'])
+    # model = MultiTaskBERTLSTM(
+    #     bert_model=bert_model,
+    #     num_emotions=num_emotions,
+    #     lstm_hidden=config['lstm_hidden_dim'],
+    #     lstm_layers=config['lstm_layers'],
+    #     dropout=config['dropout'],
+    #     bidirectional=config['bidirectional']
+    # ).to(device)
+
+    # Utwórz model
     model = MultiTaskBERTLSTM(
         bert_model=bert_model,
         num_emotions=num_emotions,
@@ -539,16 +632,38 @@ def run_pipeline(csv_path, config):
         bidirectional=config['bidirectional']
     ).to(device)
 
-    class_weights = compute_class_weight('balanced',
-                                         classes=np.unique(y_train),
-                                         y=y_train)
-    class_weights_tensor = torch.tensor(class_weights, dtype=torch.float).to(device)
+    unique_classes = np.unique(y_train)
+    class_weights = compute_class_weight('balanced', classes=unique_classes, y=y_train)
 
-    loss_fns = {
-        "sentiment": nn.CrossEntropyLoss(weight=class_weights_tensor),
-        "emotion": FocalLoss(alpha=config['focal_alpha'], gamma=config['focal_gamma']) if config['use_focal_loss'] else nn.BCEWithLogitsLoss(),
-        "intensity": nn.CrossEntropyLoss()
-    }
+    weights_full = np.ones(3, dtype=np.float32)
+    for i, c in enumerate(unique_classes):
+        weights_full[c] = class_weights[i]
+
+    class_weights_tensor = torch.tensor(weights_full, dtype=torch.float).to(device)
+
+
+# 📦 Dobierz funkcje strat w zależności od trybu danych
+    if mode_type == "multi-label":
+        loss_fns = {
+            "sentiment": nn.CrossEntropyLoss(weight=class_weights_tensor),
+            "emotion": FocalLoss(alpha=config['focal_alpha'], gamma=config['focal_gamma']) if config['use_focal_loss'] else nn.BCEWithLogitsLoss(),
+            "intensity": nn.CrossEntropyLoss()
+        }
+    else:  # single-emotion
+        loss_fns = {
+            "sentiment": nn.CrossEntropyLoss(weight=class_weights_tensor),
+            "emotion": nn.CrossEntropyLoss(),
+            "intensity": nn.CrossEntropyLoss()
+        }
+
+
+
+
+    # loss_fns = {
+    #     "sentiment": nn.CrossEntropyLoss(weight=class_weights_tensor),
+    #     "emotion": FocalLoss(alpha=config['focal_alpha'], gamma=config['focal_gamma']) if config['use_focal_loss'] else nn.BCEWithLogitsLoss(),
+    #     "intensity": nn.CrossEntropyLoss()
+    # }
 
     optimizer = torch.optim.AdamW(
         model.parameters(),
@@ -629,10 +744,16 @@ def run_pipeline(csv_path, config):
 
     # 1. Sentiment report
     sent_labels_map = {0: "negative", 1: "neutral", 2: "positive"}
+
+    # Dopasuj etykiety do rzeczywistych klas
+    unique_labels = sorted(set(final_raw['sent_labels']) | set(final_raw['sent_preds']))
+    target_names = [sent_labels_map[i] for i in unique_labels]
+
     sent_report = classification_report(
         final_raw['sent_labels'],
         final_raw['sent_preds'],
-        target_names=[sent_labels_map[i] for i in range(3)],
+        labels=unique_labels,
+        target_names=target_names,
         digits=4,
         zero_division=0
     )
@@ -644,6 +765,7 @@ def run_pipeline(csv_path, config):
         f.write(sent_report)
 
     print("\n✓ Sentiment report saved")
+
 
     # 2. Emotion report
     em_labels = np.array(final_raw['em_labels'])
@@ -787,9 +909,9 @@ if __name__ == "__main__":
     config = DEFAULT_CONFIG.copy()
     config.update({
         "output_dir": "./outputs_multitask",
-        "epochs": 6,
-        "batch_size": 16,
-        "max_len": 128,
+        "epochs": 1, #6,
+        "batch_size": 4, #16,
+        "max_len": 50, #128,
         "learning_rate": 2e-5,
         "seed": 42,
         "w_sentiment": 1.0,
