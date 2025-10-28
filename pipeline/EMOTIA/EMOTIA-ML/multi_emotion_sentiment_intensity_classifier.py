@@ -37,7 +37,7 @@ DEFAULT_CONFIG = {
     "bert_model": "bert-base-cased",
     "max_len": 128,
     "batch_size": 16,
-    "epochs": 6,
+    "epochs": 3, #do testow 6,
     "learning_rate": 2e-5,
     "weight_decay": 0.01,
     "dropout": 0.3,
@@ -50,7 +50,7 @@ DEFAULT_CONFIG = {
     "w_sentiment": 1.0,
     "w_emotion": 1.0,
     "w_intensity": 0.7,
-    "early_stopping_patience": 3,
+    "early_stopping_patience": 2, #do testow3,
     # NEW PARAMS
     "use_focal_loss": True,
     "focal_alpha": 0.25,
@@ -777,7 +777,7 @@ def run_pipeline(csv_path, config):
 # Main
 # -------------------------
 if __name__ == "__main__":
-    csv_path = "D:/julixus/meisd_project/pipeline/EMOTIA/EMOTIA-DA/outputs/multilabel_augmented_onehot.csv"
+    csv_path = "C:/Users/juwieczo/DataspellProjects/meisd_project/pipeline/EMOTIA/EMOTIA-DA/outputs/multilabel_augmented_onehot.csv"
 
     if not Path(csv_path).exists():
         raise FileNotFoundError(f"CSV file not found: {csv_path}")
@@ -856,5 +856,15 @@ if __name__ == "__main__":
         print(f"  {k:30s}: {v}")
 
     result = run_pipeline(csv_path, config)
+
+    end_time = time.time()
+    elapsed = end_time - start_time
+    hours, rem = divmod(elapsed, 3600)
+    minutes, seconds = divmod(rem, 60)
+    with open("runtime_log.txt", "a") as f:
+        f.write(f"{csv_path} : {hours}h {minutes}m {seconds:.2f}s\n")
+    print(f"\nCzas działania: {int(hours)}h {int(minutes)}m {seconds:.2f}s")
+
+
 
     print("\nAll done! Check outputs in:", config['output_dir'])
