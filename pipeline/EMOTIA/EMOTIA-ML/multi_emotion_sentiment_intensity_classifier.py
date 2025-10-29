@@ -8,6 +8,7 @@ New improvements:
 - Better optimizer configuration
 """
 
+import time
 import os
 import json
 import matplotlib.pyplot as plt
@@ -777,7 +778,8 @@ def run_pipeline(csv_path, config):
 # Main
 # -------------------------
 if __name__ == "__main__":
-    csv_path = "C:/Users/juwieczo/DataspellProjects/meisd_project/pipeline/EMOTIA/EMOTIA-DA/outputs/multilabel_augmented_onehot.csv"
+    start_time = time.time()
+    csv_path = "D:/julixus/meisd_project/pipeline/EMOTIA/EMOTIA-DA/outputs/multilabel_augmented_onehot.csv"
 
     if not Path(csv_path).exists():
         raise FileNotFoundError(f"CSV file not found: {csv_path}")
