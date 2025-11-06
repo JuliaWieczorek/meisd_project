@@ -901,7 +901,7 @@ def run_pipeline(csv_path, config):
 # -------------------------
 if __name__ == "__main__":
     start_time = time.time()
-    csv_path = "C:/Users/juwieczo/DataspellProjects/meisd_project/pipeline/EMOTIA/EMOTIA-DA/outputs/multilabel_augmented_onehot.csv"
+    csv_path = "D:/julixus/meisd_project/pipeline/EMOTIA/EMOTIA-DA/outputs/multilabel_augmented_onehot.csv"
 
     if not Path(csv_path).exists():
         raise FileNotFoundError(f"CSV file not found: {csv_path}")
