@@ -344,7 +344,7 @@ class MultilabelESConvProcessor:
             self._save_analysis_reports(analysis_data, output_dir)
 
             # ========================================
-            # ✨ Extract intensifiers (both types)
+            # Extract intensifiers (both types)
             # ========================================
             print("\n" + "=" * 70)
             print("EXTRACTING EMOTION-SPECIFIC FEATURES")
@@ -570,7 +570,7 @@ class MultilabelESConvProcessor:
 
         emotion_summary_path = os.path.join(output_dir, 'esconv_emotion_summary.csv')
         summary_by_emotion.to_csv(emotion_summary_path, encoding='utf-8')
-        print(f"📊 Saved emotion summary to: {emotion_summary_path}")
+        print(f"Saved emotion summary to: {emotion_summary_path}")
 
         # 4. Summary statistics by intensity
         summary_by_intensity = df_analysis.groupby('intensity').agg({
@@ -596,7 +596,7 @@ class MultilabelESConvProcessor:
 
         sentiment_summary_path = os.path.join(output_dir, 'esconv_sentiment_summary.csv')
         summary_by_sentiment.to_csv(sentiment_summary_path, encoding='utf-8')
-        print(f"📊 Saved sentiment summary to: {sentiment_summary_path}")
+        print(f"Saved sentiment summary to: {sentiment_summary_path}")
 
         # 6. Text-based report for paper
         report_lines = [
@@ -989,7 +989,7 @@ class MultilabelMEISDAugmenter:
 
             # Fallback if empty
             if not result:
-                print("⚠️ Empty LLaMA output — retrying with simpler prompt")
+                print("Empty LLaMA output — retrying with simpler prompt")
                 simple_prompt = f"Rewrite to express {primary_emotion} (intensity {primary_intensity}/3): {text}"
                 output = self.llm(simple_prompt, max_tokens=150, temperature=0.8)
                 result = output["choices"][0].get("text", "").strip()

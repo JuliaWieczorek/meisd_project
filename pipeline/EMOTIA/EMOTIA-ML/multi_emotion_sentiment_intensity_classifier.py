@@ -373,7 +373,7 @@ class FocalLoss(nn.Module):
         return F_loss.mean()
 
 # -------------------------
-# Training - IMPROVED!
+# Training
 # -------------------------
 def train_epoch(model, loader, optim, scheduler, device, loss_fns, weights, config):
     model.train()
@@ -564,7 +564,7 @@ def eval_epoch(model, loader, device, loss_fns, weights):
     return metrics, raw_outputs
 
 # -------------------------
-# Pipeline - FIXED & IMPROVED!
+# Pipeline
 # -------------------------
 def run_pipeline(csv_path, config):
     set_seed(config['seed'])
@@ -909,15 +909,15 @@ if __name__ == "__main__":
     config = DEFAULT_CONFIG.copy()
     config.update({
         "output_dir": "./outputs_multitask",
-        "epochs": 1, #6,
-        "batch_size": 4, #16,
-        "max_len": 50, #128,
+        "epochs": 5,
+        "batch_size": 16,
+        "max_len": 128,
         "learning_rate": 2e-5,
         "seed": 42,
         "w_sentiment": 1.0,
         "w_emotion": 1.0,
         "w_intensity": 0.7,
-        "early_stopping_patience": 3,
+        "early_stopping_patience": 2, #3
         # NEW SETTINGS
         "use_focal_loss": True,
         "focal_alpha": 0.25,
