@@ -698,7 +698,7 @@ Rules:
 Message:"""
 
         try:
-            output = self.llm(prompt, max_tokens=250, temperature=0.8, stop=["Original:", "Rules:", "\n\n\n"])
+            output = self.llm(prompt, max_tokens=150, temperature=0.8, stop=["Original:", "Rules:", "\n\n\n"])
 
             res = ""
             if isinstance(output, dict):
@@ -936,6 +936,7 @@ Message:"""
         group_counts = df["emotion_bundle_key"].value_counts()
         max_count = group_counts.max()
         target_count = int(max_count * float(target_multiplier))
+        max_aug_per_group = 600
 
         print(f"[Balance] Max={max_count}, target={target_count}, groups={len(group_counts)}")
 
@@ -955,6 +956,8 @@ Message:"""
 
             # Augment
             needed = target_count - count
+            needed = min(needed, max_aug_per_group)
+
             print(f"  Augmenting {needed} for {group_key}")
 
             old_data = self.meisd_data
@@ -1079,7 +1082,7 @@ def merge_patterns_for_bundle(esconv_processor, emotion_bundle, sentiment):
 def filter_meisd_for_esconv_compatibility_FIXED(
         meisd_df,
         esconv_processor,
-        min_samples=15,
+        min_samples=10,
         allowed_intensities=[1.0, 2.0, 3.0],
         remove_incompatible_emotions=True
 ):
@@ -1448,32 +1451,32 @@ if __name__ == "__main__":
     # ========================================
     # STEP 5: Test augmentation
     # ========================================
-    print("\n[5/5] Testing augmentation (3 samples)...")
-
-    mode = 'mixed' if llm else 'eda'
-    df_aug = augmenter.augment_multilabel(
-        num_samples=3,
-        mode='llm',
-        save_details=True
-    )
-
-    # Save augmented samples
-    aug_output_path = OUTPUT_DIR / "MEISD_augmented_TEST.csv"
-    df_aug.to_csv(aug_output_path, index=False, encoding='utf-8')
-    print(f"Augmented samples saved: {aug_output_path}")
-
-    # Save quality summary
-    summary = summarize_augmentation_quality(
-        df_aug,
-        mode,
-        save_path=OUTPUT_DIR / "augmentation_quality_summary.csv"
-    )
-
-    print("\n" + "="*70)
-    print("=== AUGMENTATION SUMMARY ===")
-    print("="*70)
-    for key, value in summary.items():
-        print(f"  {key}: {value}")
+    # print("\n[5/5] Testing augmentation (3 samples)...")
+    #
+    # mode = 'mixed' if llm else 'eda'
+    # df_aug = augmenter.augment_multilabel(
+    #     num_samples=10,
+    #     mode='llm',
+    #     save_details=True
+    # )
+    #
+    # # Save augmented samples
+    # aug_output_path = OUTPUT_DIR / "MEISD_augmented_TEST.csv"
+    # df_aug.to_csv(aug_output_path, index=False, encoding='utf-8')
+    # print(f"Augmented samples saved: {aug_output_path}")
+    #
+    # # Save quality summary
+    # summary = summarize_augmentation_quality(
+    #     df_aug,
+    #     mode,
+    #     save_path=OUTPUT_DIR / "augmentation_quality_summary.csv"
+    # )
+    #
+    # print("\n" + "="*70)
+    # print("=== AUGMENTATION SUMMARY ===")
+    # print("="*70)
+    # for key, value in summary.items():
+    #     print(f"  {key}: {value}")
 
     # ========================================
     # OPTIONAL: Balance and expand dataset
@@ -1484,14 +1487,14 @@ if __name__ == "__main__":
     print("="*70)
 
     # Uncomment to run:
-    # print("\n[BONUS] Balancing and expanding dataset...")
-    # balanced_df = augmenter.balance_and_expand_multilabel(
-    #     target_multiplier=1.5,
-    #     mode=mode
-    # )
-    # balanced_path = OUTPUT_DIR / "MEISD_balanced_expanded.csv"
-    # balanced_df.to_csv(balanced_path, index=False, encoding='utf-8')
-    # print(f"Balanced dataset saved: {balanced_path}")
+    print("\n[BONUS] Balancing and expanding dataset...")
+    balanced_df = augmenter.balance_and_expand_multilabel(
+        target_multiplier=1,
+        mode='llm'
+    )
+    balanced_path = OUTPUT_DIR / "MEISD_balanced_expanded.csv"
+    balanced_df.to_csv(balanced_path, index=False, encoding='utf-8')
+    print(f"Balanced dataset saved: {balanced_path}")
 
     print("\n" + "="*70)
     print("ALL PROCESSING COMPLETE!")
