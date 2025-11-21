@@ -909,9 +909,9 @@ if __name__ == "__main__":
     config = DEFAULT_CONFIG.copy()
     config.update({
         "output_dir": "./outputs_multitask",
-        "epochs": 1, #6,
-        "batch_size": 4, #16,
-        "max_len": 50, #128,
+        "epochs": 10,
+        "batch_size": 16,
+        "max_len": 128,
         "learning_rate": 2e-5,
         "seed": 42,
         "w_sentiment": 1.0,
