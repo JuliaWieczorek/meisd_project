@@ -32,7 +32,7 @@ class MultilabelESConvProcessor:
         return self.esconv_data
 
     def analyze_multilabel_patterns(self, save_analysis=True, output_dir=None):
-        """✅ FIXED: Analyze ALL 3 emotions"""
+        """FIXED: Analyze ALL 3 emotions"""
         self.output_dir = output_dir
 
         if self.esconv_data is None:
@@ -56,7 +56,7 @@ class MultilabelESConvProcessor:
         df['text'] = df[text_col].astype(str)
         df['sentiment'] = df[sentiment_col].astype(str).str.lower().str.strip()
 
-        print("\n🔍 Extracting ALL emotions (emotion1, emotion2, emotion3)...")
+        print("\nExtracting ALL emotions (emotion1, emotion2, emotion3)...")
 
         emotion_records = []
 
@@ -89,16 +89,16 @@ class MultilabelESConvProcessor:
                         except (ValueError, TypeError):
                             continue
 
-        print(f"\n✅ Extracted {len(emotion_records)} emotion instances")
-        print(f"✅ Found {len(self.all_emotions)} unique emotions: {sorted(self.all_emotions)}")
+        print(f"\nExtracted {len(emotion_records)} emotion instances")
+        print(f"Found {len(self.all_emotions)} unique emotions: {sorted(self.all_emotions)}")
 
         if len(emotion_records) == 0:
-            print("⚠️ WARNING: No valid emotions found!")
+            print("WARNING: No valid emotions found!")
             return
 
         df_emotions = pd.DataFrame(emotion_records)
 
-        print("\n🔍 Analyzing patterns by (emotion, intensity, sentiment)...")
+        print("\nAnalyzing patterns by (emotion, intensity, sentiment)...")
         grouped = df_emotions.groupby(['emotion', 'intensity', 'sentiment'])
 
         analysis_data = []
@@ -133,17 +133,17 @@ class MultilabelESConvProcessor:
                 'exclamation_ratio': round(patterns['exclamation_ratio'], 3)
             })
 
-        print(f"\n✅ Extracted patterns for {len(self.style_patterns)} combinations")
+        print(f"\nExtracted patterns for {len(self.style_patterns)} combinations")
 
         if save_analysis and output_dir:
             self._save_analysis_reports(analysis_data, output_dir)
 
         # Extract intensifiers
-        print("\n🔍 Extracting emotion-specific intensifiers...")
+        print("\nExtracting emotion-specific intensifiers...")
         self.emotion_intensifiers = self.extract_emotion_intensifiers(top_n=10)
         self.intensity_aware_intensifiers = self.extract_intensity_aware_intensifiers(top_n=10)
 
-        print("\n✅ Pattern analysis complete!")
+        print("\nPattern analysis complete!")
 
     def _extract_patterns(self, texts):
         patterns = {}
@@ -381,15 +381,16 @@ class MultilabelESConvProcessor:
 
         analysis_path = os.path.join(output_dir, 'esconv_pattern_analysis_ALL_EMOTIONS.csv')
         df_analysis.to_csv(analysis_path, index=False, encoding='utf-8')
-        print(f"\n✅ Analysis saved: {analysis_path}")
+        print(f"\nAnalysis saved: {analysis_path}")
 
 
 # ============================================================
-# === MULTILABEL AUGMENTER (TRANSFER LEARNING) ===
+# === MULTILABEL AUGMENTER (TRANSFER LEARNING) - FIXED ===
 # ============================================================
 class MultilabelMEISDAugmenter:
     """
-    ✅ Enhanced augmenter with transfer learning from ESConv
+    Enhanced augmenter with transfer learning from ESConv
+    FIXED: Properly handles ALL 3 emotions in bundle
     """
 
     def __init__(self, meisd_path, esconv_processor, llama_obj=None):
@@ -411,7 +412,7 @@ class MultilabelMEISDAugmenter:
 
     def augment_multilabel(self, num_samples=10, mode='mixed', save_details=True, default_sentiment='negative'):
         """
-        ✅ Main augmentation function - multi-emotion aware
+        Main augmentation function - multi-emotion aware
 
         Args:
             num_samples: Number of samples to augment
@@ -426,6 +427,8 @@ class MultilabelMEISDAugmenter:
         samples = self.meisd_data.sample(n)
         augmented_rows = []
         details = []
+
+        invalid_count = 0
 
         for idx, row in tqdm(samples.iterrows(), total=len(samples), desc="Augmenting (multi-emotion)"):
             text_col = next((c for c in row.index if any(k in c.lower() for k in ['utterance', 'text', 'message', 'content'])), None)
@@ -454,6 +457,12 @@ class MultilabelMEISDAugmenter:
             else:
                 transformed = text
 
+            if not self._is_valid_output(transformed):
+                print(f"\nWARNING: Invalid output detected, using original")
+                print(f"  Invalid: {transformed[:100]}")
+                transformed = text
+                invalid_count += 1
+
             quality = self._calculate_quality(text, transformed, patterns)
 
             out_row = {
@@ -478,8 +487,12 @@ class MultilabelMEISDAugmenter:
                     'transformed_len': len(transformed.split()),
                     'bundle': emotion_bundle,
                     'quality': quality,
-                    'mode': mode
+                    'mode': mode,
+                    'is_valid': self._is_valid_output(transformed)
                 })
+
+        if invalid_count > 0:
+            print(f"\nDetected {invalid_count} invalid outputs (reverted to originals)")
 
         df_out = pd.DataFrame(augmented_rows)
         if save_details:
@@ -487,35 +500,206 @@ class MultilabelMEISDAugmenter:
 
         return df_out
 
+    def _contains_emotion_words(self, text):
+        """
+        Check if output contains explicit emotion labels.
+        This prevents LLM from generating texts like:
+        'I felt angry', 'I was sad', etc.
+        """
+        emotion_words = [
+            'anger', 'anxiety', 'depression', 'disgust', 'fear', 'guilt',
+            'jealousy', 'nervousness', 'pain', 'sadness', 'shame'
+        ]
+
+        text_lower = text.lower()
+        return any(word in text_lower for word in emotion_words)
+
+
+    def _is_valid_output(self, text):
+        """
+        Waliduj czy output jest akceptowalny
+        """
+        if not text or len(text.strip()) < 3:
+            return False
+
+        text_lower = text.lower()
+
+        # Sprawdź niedozwolone wzorce
+        invalid_patterns = [
+            'intensity',
+            'rewritten',
+            'convey',
+            'blend',
+            'primary emotion',
+            '*rolls eyes*',
+            '*sigh*',
+            '*gag*',
+            'note that',
+            'in this message',
+            '(intensity'
+        ]
+
+        for pattern in invalid_patterns:
+            if pattern in text_lower:
+                return False
+
+        # Sprawdź gwiazdki
+        if '*' in text:
+            return False
+
+        # Sprawdź nawiasy z cyframi (intensity markers)
+        if re.search(r'\(\s*intensity\s+\d+\s*\)', text_lower):
+            return False
+
+        return True
+
+    def print_augmentation_samples(df_aug, n=5):
+        """
+        Wyświetl przykłady augmentacji do inspekcji
+        """
+        print("\n" + "="*70)
+        print("SAMPLE AUGMENTATIONS (Manual Inspection)")
+        print("="*70)
+
+        samples = df_aug.sample(min(n, len(df_aug)))
+
+        for idx, row in samples.iterrows():
+            print(f"\n--- Sample {idx} ---")
+            print(f"Emotions: {row['emotion1']}/{row['intensity1']}", end="")
+            if pd.notna(row.get('emotion2')):
+                print(f", {row['emotion2']}/{row['intensity2']}", end="")
+            if pd.notna(row.get('emotion3')):
+                print(f", {row['emotion3']}/{row['intensity3']}", end="")
+            print(f"\nSentiment: {row['sentiment']}")
+            print(f"Mode: {row['mode']}")
+            print(f"Quality: {row['quality']:.3f}")
+            print(f"\nOriginal:\n  {row['original']}")
+            print(f"\nAugmented:\n  {row['augmented']}")
+
+            # Validation check
+            is_valid = (
+                    'intensity' not in row['augmented'].lower() and
+                    '*' not in row['augmented'] and
+                    'rewritten' not in row['augmented'].lower()
+            )
+            print(f"\n✓ Valid: {is_valid}")
+            if not is_valid:
+                print("WARNING: This output contains invalid patterns!")
+
+        print("\n" + "="*70)
+
     def _llm_transform_multi(self, text, emotion_bundle, sentiment, patterns):
-        """LLM-based transformation with multi-emotion prompt"""
+        """
+        FIXED: Emocje wyrażane IMPLICITNIE przez treść, NIE poprzez nazywanie
+        - Używa sytuacji/zdarzeń charakterystycznych dla emocji
+        - Używa fizycznych objawów i reakcji
+        - Używa myśli i reakcji behawioralnych
+        - BEZ bezpośredniego nazywania emocji (sad, angry, neutral, etc.)
+        """
         if not self.llm:
             return text
 
-        emotion_ctx = ", ".join([f"{e} (intensity {int(i)})" for e, i in emotion_bundle])
-        keywords = patterns.get('keywords', [])[:12]
+        # === MAPOWANIE EMOCJI NA SYTUACJE/OBJAWY (zamiast nazw) ===
+        emotion_cues = {
+            ('sad', 1): "things feel a bit off, nothing seems worth the effort",
+            ('sad', 2): "everything feels heavy, can't stop thinking about what went wrong",
+            ('sad', 3): "can barely get out of bed, nothing matters anymore",
+
+            ('angry', 1): "it's bothering me more than it should",
+            ('angry', 2): "jaw clenching, wanting to yell at someone",
+            ('angry', 3): "shaking with rage, can't think straight",
+
+            ('anxiety', 1): "something feels off, can't quite relax",
+            ('anxiety', 2): "heart racing, checking things over and over",
+            ('anxiety', 3): "can't breathe properly, everything closing in",
+
+            ('afraid', 1): "uneasy feeling that something bad might happen",
+            ('afraid', 2): "looking over shoulder, hands shaking",
+            ('afraid', 3): "paralyzed, can't move, wanting to hide",
+
+            ('disgusted', 1): "uncomfortable, wanting to look away",
+            ('disgusted', 2): "stomach turning, can't stand this",
+            ('disgusted', 3): "physically sick, wanting to get far away",
+
+            ('surprised', 1): "wasn't expecting that at all",
+            ('surprised', 2): "can't believe what happened, mind racing",
+            ('surprised', 3): "completely stunned, don't know how to react",
+
+            ('joyful', 1): "things are looking up a bit",
+            ('joyful', 2): "can't help but smile, everything feels lighter",
+            ('joyful', 3): "feeling like floating, wanting to tell everyone",
+
+            ('hopeful', 1): "maybe things could work out after all",
+            ('hopeful', 2): "starting to see possibilities, feels like new beginning",
+            ('hopeful', 3): "everything falling into place, know it's going to be amazing",
+
+            ('neutral', 1): "it is what it is, going through the motions",
+            ('neutral', 2): "don't feel much about it either way",
+            ('neutral', 3): "everything just feels flat and empty"
+        }
+
+        # Zbierz wskazówki emocjonalne (BEZ nazw emocji)
+        emotional_cues = []
+        for emotion, intensity in emotion_bundle:
+            key = (emotion, int(intensity))
+            cue = emotion_cues.get(key, "")
+            if cue:
+                emotional_cues.append(cue)
+
+        cues_description = " and ".join(emotional_cues) if emotional_cues else "mixed feelings"
+
         target_len = int(patterns.get('avg_length', 50))
 
-        primary = emotion_bundle[0]
-        examples = self.esconv_processor.get_examples(primary[0], int(primary[1]), sentiment, max_examples=2)
-        examples_str = "\n".join([f"- {e}" for e in examples]) if examples else "No examples."
+        # === ZBIERZ PRZYKŁADY (filtruj te z nazwami emocji) ===
+        all_examples = []
+        seen_examples = set()
 
-        prompt = f"""[INST]
-You are an empathetic rewriting assistant. Rewrite the following message to convey these emotions naturally:
+        # ROZSZERZONA lista słów emocji do filtrowania
+        emotion_keywords = ['sad', 'angry', 'anxious', 'afraid', 'disgusted', 'surprised',
+                            'joyful', 'hopeful', 'neutral', 'happy', 'fear', 'anger',
+                            'sadness', 'joy', 'disgust', 'anxiety', 'surprise', 'scared',
+                            'worried', 'frustrated', 'depressed', 'excited', 'nervous']
 
-Emotions: {emotion_ctx}
-Sentiment: {sentiment}
-Target length: ~{target_len} words
+        for emotion, intensity in emotion_bundle:
+            examples = self.esconv_processor.get_examples(
+                emotion, int(intensity), sentiment, max_examples=3
+            )
+            if examples:
+                for ex in examples:
+                    ex_normalized = ex.lower().strip()
+                    # Filtruj przykłady zawierające nazwy emocji
+                    if (ex_normalized not in seen_examples and
+                            '*' not in ex and
+                            not any(emo_word in ex.lower() for emo_word in emotion_keywords)):
+                        all_examples.append(ex)
+                        seen_examples.add(ex_normalized)
 
-Examples:
-{examples_str}
+        if len(all_examples) > 4:
+            all_examples = random.sample(all_examples, 4)
+
+        examples_str = "\n".join([f"- {ex}" for ex in all_examples]) if all_examples else "(no clean examples available)"
+
+        # === UPROSZCZONY PROMPT - mniej restrykcyjny ===
+        prompt = f"""Rewrite this message as someone talking to a therapist. Show their emotional state through what they describe, not by naming emotions.
 
 Original: "{text}"
-Rewritten: [/INST]
-"""
+
+Their state: {cues_description}
+
+{examples_str}
+
+Rules:
+- Show feelings through situations, physical reactions, thoughts
+- Don't use emotion labels (sad, angry, happy, etc.)
+- Natural tone, about {target_len} words
+- {sentiment} sentiment
+- Just the message, no explanations
+
+Message:"""
 
         try:
-            output = self.llm(prompt, max_tokens=300, temperature=0.8)
+            output = self.llm(prompt, max_tokens=250, temperature=0.8, stop=["Original:", "Rules:", "\n\n\n"])
+
             res = ""
             if isinstance(output, dict):
                 choices = output.get("choices", [])
@@ -524,34 +708,134 @@ Rewritten: [/INST]
             elif isinstance(output, str):
                 res = output.strip()
 
+            # === DIAGNOSTYKA ===
+            print(f"\n[DEBUG] Raw LLM output length: {len(res)}")
+            print(f"[DEBUG] First 100 chars: {res[:100] if res else 'EMPTY'}")
+
             if not res or len(res.split()) < 3:
+                print(f"[DEBUG] Output too short, using original")
                 return text
 
-            res = re.sub(r'^[\-\*\s"]+','', res)
-            res = re.sub(r'[\-\*\s"]+$','', res)
-            return res
+            # === CZYSZCZENIE ===
+            cleaned = self._clean_llm_output(res, text)
+
+            print(f"[DEBUG] After cleaning length: {len(cleaned)}")
+            print(f"[DEBUG] Cleaned preview: {cleaned[:100]}")
+
+            # Sprawdź czy zawiera nazwy emocji
+            contains_emotions = self._contains_emotion_words(cleaned)
+            print(f"[DEBUG] Contains emotion words: {contains_emotions}")
+
+            if contains_emotions:
+                print(f"[DEBUG] Reverting due to emotion words")
+                return text
+
+            # Sprawdź czy nie jest identyczny z oryginałem
+            if cleaned.strip().lower() == text.strip().lower():
+                print(f"[DEBUG] Output identical to original!")
+                return text
+
+            print(f"[DEBUG] Accepting transformed text")
+            return cleaned if cleaned else text
+
         except Exception as e:
-            print(f"LLM error: {e}")
+            print(f"[DEBUG] LLM error: {e}")
             return text
 
+    def _clean_llm_output(self, output, original_text):
+        """
+        Agresywne czyszczenie outputu LLM
+        """
+        cleaned = output.strip()
+
+        # 1. Usuń meta-komentarze LLM
+        meta_patterns = [
+            r"In this rewritten.*?[.!]",
+            r"This rewritten.*?[.!]",
+            r"The rewritten.*?[.!]",
+            r"Note that.*?[.!]",
+            r"Please note.*?[.!]",
+            r"\[.*?\]"
+        ]
+
+        for pattern in meta_patterns:
+            cleaned = re.sub(pattern, "", cleaned, flags=re.IGNORECASE | re.DOTALL)
+
+        # 2. Usuń linie z wyjaśnieniami
+        lines = cleaned.split('\n')
+        valid_lines = []
+        for line in lines:
+            line_lower = line.lower().strip()
+            # Usuń linie które są wyjaśnieniami
+            if any(skip in line_lower for skip in [
+                'rewritten',
+                'maintain', 'convey', 'blend', 'primary feeling',
+                'as you can see', 'this version', 'note:', 'example:'
+            ]):
+                continue
+            if line.strip():
+                valid_lines.append(line)
+
+        cleaned = ' '.join(valid_lines)
+
+        # 3. Usuń gwiazdki i akcje
+        cleaned = re.sub(r'\*[^*]+\*', '', cleaned)  # *action*
+        cleaned = re.sub(r'\*+', '', cleaned)  # pozostałe gwiazdki
+
+        # 4. Usuń jawne odniesienia do intensywności/emocji
+        emotion_mentions = [
+            r'\(intensity\s+\d+\)',
+            r'I am feeling (an? )?(intense |strong )?\w+ \(intensity \d+\)',
+            r'feeling (an? )?(intense |strong )?\w+ \(intensity \d+\)',
+        ]
+        for pattern in emotion_mentions:
+            cleaned = re.sub(pattern, '', cleaned, flags=re.IGNORECASE)
+
+        # 5. Usuń cudzysłowy otwierające/zamykające
+        cleaned = re.sub(r'^["\']|["\']$', '', cleaned.strip())
+
+        # 6. Usuń multiple spaces
+        cleaned = re.sub(r'\s+', ' ', cleaned)
+
+        # 7. Fix interpunkcję
+        cleaned = re.sub(r'\s+([.,!?;:])', r'\1', cleaned)
+        cleaned = re.sub(r'([.,!?;:])\1+', r'\1', cleaned)  # Usuń duplikaty
+
+        # 8. Walidacja finalnego outputu
+        cleaned = cleaned.strip()
+
+        return cleaned
+
     def _eda_transform_multi(self, text, emotion_bundle, sentiment, patterns):
-        """Rule-based augmentation with multi-emotion awareness"""
+        """
+        POPRAWIONY: Rule-based bez meta-informacji
+        """
         transformed = text
         words = transformed.split()
+
         keywords = patterns.get('keywords', [])
         starters = patterns.get('sentence_starters', [])
         intensifiers = patterns.get('intensifiers', [])
 
-        # Insert intensifier based on max intensity
-        max_intensity = max([int(i) for _, i in emotion_bundle])
-        intensity_prob = {1: 0.2, 2: 0.45, 3: 0.75}
-        prob = intensity_prob.get(int(max_intensity), 0.4)
+        # Walidacja patterns
+        if not any([keywords, starters, intensifiers]):
+            intensifiers = ['very', 'really', 'so']
+            starters = ['i', 'it', 'this']
 
+        # Filtruj keywords - BEZ meta-słów
+        meta_words = ['intensity', 'emotion', 'feeling', 'express', 'convey']
+        keywords = [k for k in keywords if k.lower() not in meta_words]
+
+        avg_intensity = np.mean([int(i) for _, i in emotion_bundle])
+        intensity_prob = {1: 0.2, 2: 0.45, 3: 0.75}
+        prob = intensity_prob.get(round(avg_intensity), 0.4)
+
+        # Insert intensifier
         if intensifiers and random.random() < prob:
             intens = random.choice(intensifiers)
             inserted = False
             for i, w in enumerate(words):
-                if w.lower() in ['feel', 'felt', 'feeling', 'feels'] and i < len(words)-1:
+                if w.lower() in ['feel', 'felt', 'feeling', 'feels', 'am', 'was', 'been'] and i < len(words)-1:
                     words.insert(i+1, intens)
                     inserted = True
                     break
@@ -564,7 +848,7 @@ Rewritten: [/INST]
         # Insert keywords
         words = transformed.split()
         if keywords:
-            to_insert = min(max(1, len(words)//12), 3)
+            to_insert = min(max(1, len(words)//12), 2)  # Max 2 keywords
             available = [k for k in keywords if k.lower() not in transformed.lower()]
             for kw in random.sample(available, min(len(available), to_insert)):
                 pos = random.randint(0, len(words))
@@ -574,23 +858,40 @@ Rewritten: [/INST]
 
         # Adjust starter
         words = transformed.split()
-        if starters and random.random() < 0.3:
-            st = random.choice(starters)
-            if words:
+        if starters and random.random() < 0.25:  # Obniżone prawdopodobieństwo
+            st = random.choice([s for s in starters if s not in ['*', '[', ']']])
+            if words and st.isalnum():  # Tylko alfanumeryczne
                 words[0] = st.capitalize()
             transformed = " ".join(words)
 
         # Length adjustment
         target_len = int(patterns.get('avg_length', 50))
+        words = transformed.split()
         if len(words) < target_len * 0.6:
-            transformed += " I'm not sure what to do."
+            # Dodaj naturalne zakończenie
+            endings = [
+                "I don't know what to do.",
+                "It's been really hard.",
+                "I'm struggling with this.",
+                "I need some help.",
+                "I'm not sure how to handle this."
+            ]
+            transformed += " " + random.choice(endings)
         elif len(words) > target_len * 1.6:
             transformed = " ".join(words[:int(target_len * 1.2)])
 
-        # Add pronoun if missing
-        if not any(p in transformed.lower() for p in ['i ', ' me ', 'my ', 'myself']):
-            if random.random() < 0.35:
-                transformed = "I feel " + transformed[0].lower() + transformed[1:] if transformed else "I feel concerned."
+        # Dodaj pronoun jeśli brakuje
+        if not any(p in transformed.lower() for p in ['i ', ' me ', 'my ', 'myself', "i'm"]):
+            if random.random() < 0.3:  # Obniżone prawdopodobieństwo
+                if transformed and transformed[0].isupper():
+                    transformed = "I " + transformed[0].lower() + transformed[1:]
+                else:
+                    transformed = "I " + transformed
+
+        # === FINALNE CZYSZCZENIE ===
+        # Usuń gwiazdki jeśli jakimś cudem się pojawiły
+        transformed = re.sub(r'\*+', '', transformed)
+        transformed = re.sub(r'\s+', ' ', transformed).strip()
 
         return transformed
 
@@ -616,7 +917,7 @@ Rewritten: [/INST]
 
     def balance_and_expand_multilabel(self, target_multiplier=1.0, mode="mixed"):
         """
-        ✅ Balance dataset by multi-emotion combinations
+        Balance dataset by multi-emotion combinations
         """
         if self.meisd_data is None:
             self.setup()
@@ -703,14 +1004,18 @@ def extract_multilabel_emotions(row):
 
 
 def merge_patterns_for_bundle(esconv_processor, emotion_bundle, sentiment):
-    """Merge ESConv patterns for emotion bundle"""
+    """Merge ESConv patterns for emotion bundle with robust fallbacks"""
     merged = {
         "keywords": set(),
         "sentence_starters": set(),
         "avg_length": 0.0,
-        "intensifiers": set()
+        "intensifiers": set(),
+        "examples": []
     }
     counts = 0
+
+    # NOWE: Domyślne intensyfikatory jeśli nic nie znajdziemy
+    default_intensifiers = ['very', 'really', 'so', 'quite', 'extremely']
 
     for (emotion, intensity) in emotion_bundle:
         key = (emotion, int(intensity), str(sentiment).lower())
@@ -721,27 +1026,55 @@ def merge_patterns_for_bundle(esconv_processor, emotion_bundle, sentiment):
             merged["avg_length"] += p.get("avg_length", 0.0)
             counts += 1
 
-        # Intensifiers
+        # Intensifiers z hierarchią fallbacków
         ia_key = (emotion, int(intensity))
         ia = getattr(esconv_processor, 'intensity_aware_intensifiers', {}).get(ia_key, [])
         if ia:
             merged["intensifiers"].update(ia)
         else:
             emo_only = getattr(esconv_processor, 'emotion_intensifiers', {}).get(emotion, [])
-            merged["intensifiers"].update(emo_only)
+            if emo_only:
+                merged["intensifiers"].update(emo_only)
+            # NOWE: Jeśli nadal puste, dodaj domyślne
+            if not merged["intensifiers"]:
+                merged["intensifiers"].update(default_intensifiers)
 
+        examples = esconv_processor.get_examples(emotion, int(intensity), sentiment, max_examples=2)
+        merged["examples"].extend(examples)
+
+    # NOWE: Walidacja długości
     if counts > 0:
         merged["avg_length"] = merged["avg_length"] / counts
     else:
-        merged["avg_length"] = 50.0
+        # Jeśli brak wzorców, oblicz z przykładów
+        if merged["examples"]:
+            avg_from_examples = np.mean([len(ex.split()) for ex in merged["examples"]])
+            merged["avg_length"] = avg_from_examples
+        else:
+            merged["avg_length"] = 50.0  # Ostateczny fallback
+
+    # NOWE: Walidacja starter'ów
+    if not merged["sentence_starters"]:
+        merged["sentence_starters"] = {'i', 'it', 'that', 'this', 'my', 'the'}
+
+    # NOWE: Walidacja keywords
+    if not merged["keywords"]:
+        # Wyciągnij z przykładów jako fallback
+        if merged["examples"]:
+            from collections import Counter
+            words = []
+            for ex in merged["examples"]:
+                words.extend(ex.lower().split())
+            common_words = [w for w, _ in Counter(words).most_common(20)]
+            merged["keywords"] = common_words
 
     return {
-        "keywords": list(merged["keywords"]),
-        "sentence_starters": list(merged["sentence_starters"]),
+        "keywords": list(merged["keywords"])[:30],  # Ogranicz
+        "sentence_starters": list(merged["sentence_starters"])[:15],
         "avg_length": merged["avg_length"],
-        "intensifiers": list(merged["intensifiers"])
+        "intensifiers": list(merged["intensifiers"])[:15],
+        "examples": merged["examples"][:6]
     }
-
 
 def filter_meisd_for_esconv_compatibility_FIXED(
         meisd_df,
@@ -750,7 +1083,7 @@ def filter_meisd_for_esconv_compatibility_FIXED(
         allowed_intensities=[1.0, 2.0, 3.0],
         remove_incompatible_emotions=True
 ):
-    """✅ FIXED: Filter MEISD for ALL 3 emotions"""
+    """FIXED: Filter MEISD for ALL 3 emotions"""
     print("\n" + "=" * 70)
     print("FILTERING MEISD FOR ESCONV COMPATIBILITY (ALL 3 EMOTIONS)")
     print("=" * 70)
@@ -758,10 +1091,10 @@ def filter_meisd_for_esconv_compatibility_FIXED(
     esconv_emotions = esconv_processor.all_emotions
 
     if len(esconv_emotions) == 0:
-        print("\n⚠️ ERROR: ESConv processor has NO emotions!")
+        print("\nERROR: ESConv processor has NO emotions!")
         raise ValueError("ESConv processor has no emotions analyzed")
 
-    print(f"\n✅ ESConv emotions ({len(esconv_emotions)}): {sorted(esconv_emotions)}")
+    print(f"\nESConv emotions ({len(esconv_emotions)}): {sorted(esconv_emotions)}")
 
     meisd_emotions = set()
     for i in [1, 2, 3]:
@@ -770,13 +1103,13 @@ def filter_meisd_for_esconv_compatibility_FIXED(
             emotions = meisd_df[col].dropna().astype(str).str.lower().str.strip()
             meisd_emotions.update(emotions[emotions != ''])
 
-    print(f"✅ MEISD emotions ({len(meisd_emotions)}): {sorted(meisd_emotions)}")
+    print(f"MEISD emotions ({len(meisd_emotions)}): {sorted(meisd_emotions)}")
 
     compatible_emotions = esconv_emotions & meisd_emotions
     incompatible_emotions = meisd_emotions - esconv_emotions
 
-    print(f"\n✅ Compatible emotions ({len(compatible_emotions)}): {sorted(compatible_emotions)}")
-    print(f"❌ Incompatible emotions ({len(incompatible_emotions)}): {sorted(incompatible_emotions)}")
+    print(f"\nCompatible emotions ({len(compatible_emotions)}): {sorted(compatible_emotions)}")
+    print(f"Incompatible emotions ({len(incompatible_emotions)}): {sorted(incompatible_emotions)}")
 
     original_size = len(meisd_df)
     meisd_filtered = meisd_df.copy()
@@ -890,7 +1223,7 @@ def filter_meisd_for_esconv_compatibility_FIXED(
         print(f"  Removed {removed_by_rarity} rows")
         print(f"  Remaining: {len(meisd_filtered)} rows")
     else:
-        print(f"  ✅ No rare combinations found")
+        print(f"  No rare combinations found")
         removed_by_rarity = 0
 
     print(f"\n{'=' * 70}")
@@ -930,6 +1263,48 @@ def summarize_augmentation_quality(df_aug, mode, save_path=None):
         print(f"Summary saved to: {save_path}")
 
     return summary
+
+def diagnose_patterns(esconv_processor):
+    """Diagnose pattern extraction issues"""
+    print("\n" + "="*70)
+    print("PATTERN EXTRACTION DIAGNOSTICS")
+    print("="*70)
+
+    print(f"\nTotal patterns: {len(esconv_processor.style_patterns)}")
+    print(f"Unique emotions: {len(esconv_processor.all_emotions)}")
+
+    # Check intensity_aware_intensifiers
+    ia = getattr(esconv_processor, 'intensity_aware_intensifiers', {})
+    print(f"\nIntensity-aware intensifiers: {len(ia)} combinations")
+    if ia:
+        print("Sample keys:", list(ia.keys())[:5])
+        print("Sample values:", list(ia.values())[:3])
+    else:
+        print("WARNING: No intensity-aware intensifiers extracted!")
+
+    # Check emotion_intensifiers
+    ei = getattr(esconv_processor, 'emotion_intensifiers', {})
+    print(f"\nEmotion intensifiers: {len(ei)} emotions")
+    if ei:
+        print("Sample:", dict(list(ei.items())[:3]))
+    else:
+        print("WARNING: No emotion intensifiers extracted!")
+
+    # Check pattern completeness
+    empty_patterns = 0
+    for key, pattern in esconv_processor.style_patterns.items():
+        if not pattern.get('keywords') and not pattern.get('intensifiers'):
+            empty_patterns += 1
+
+    print(f"\nEmpty patterns: {empty_patterns}/{len(esconv_processor.style_patterns)}")
+
+    return {
+        'total_patterns': len(esconv_processor.style_patterns),
+        'intensity_aware': len(ia),
+        'emotion_only': len(ei),
+        'empty_patterns': empty_patterns
+    }
+
 
 
 # ============================================================
@@ -981,13 +1356,24 @@ if __name__ == "__main__":
         output_dir=OUTPUT_DIR
     )
 
-    print(f"\n✅ ESConv analysis complete!")
+    diagnostics = diagnose_patterns(esconv_processor)
+
+    if diagnostics['intensity_aware'] == 0 and diagnostics['emotion_only'] == 0:
+        print("\nERROR: No intensifiers extracted! Check data and thresholds.")
+        print("Możliwe przyczyny:")
+        print("  1. Za wysoki próg min_df w TfidfVectorizer")
+        print("  2. Za mało próbek w grupach (próg < 10)")
+        print("  3. Brak słów intensyfikujących w tekstach")
+        import sys
+        sys.exit(1)
+
+    print(f"\nESConv analysis complete!")
     print(f"   Unique emotions: {len(esconv_processor.all_emotions)}")
     print(f"   Patterns: {len(esconv_processor.style_patterns)}")
     print(f"   Emotions: {sorted(esconv_processor.all_emotions)}")
 
     if len(esconv_processor.all_emotions) == 0:
-        raise ValueError("❌ No emotions found in ESConv!")
+        raise ValueError("No emotions found in ESConv!")
 
     # ========================================
     # STEP 3: Filter MEISD
@@ -1006,7 +1392,7 @@ if __name__ == "__main__":
     # Save filtered MEISD
     meisd_filtered_path = OUTPUT_DIR / "MEISD_filtered_ALL_EMOTIONS.csv"
     meisd_filtered.to_csv(meisd_filtered_path, index=False, encoding='utf-8')
-    print(f"\n✅ Filtered MEISD saved: {meisd_filtered_path}")
+    print(f"\nFiltered MEISD saved: {meisd_filtered_path}")
 
     # Save report
     report_path = OUTPUT_DIR / "meisd_filtering_report.txt"
@@ -1025,7 +1411,7 @@ if __name__ == "__main__":
         f.write(f"Incompatible emotions ({len(meisd_report['incompatible_emotions'])}):\n")
         f.write(f"  {', '.join(sorted(meisd_report['incompatible_emotions']))}\n")
 
-    print(f"✅ Report saved: {report_path}")
+    print(f"Report saved: {report_path}")
 
     # ========================================
     # STEP 4: Setup augmenter with LLM
@@ -1043,12 +1429,12 @@ if __name__ == "__main__":
                 n_threads=8,
                 temperature=0.8
             )
-            print("✅ LLM loaded successfully")
+            print("LLM loaded successfully")
         except Exception as e:
-            print(f"⚠️ LLM not loaded: {e}")
+            print(f"LLM not loaded: {e}")
             print("   Will use EDA-only augmentation")
     else:
-        print(f"⚠️ LLM not found at {LLAMA_PATH}")
+        print(f"LLM not found at {LLAMA_PATH}")
         print("   Will use EDA-only augmentation")
 
     # Setup augmenter
@@ -1074,7 +1460,7 @@ if __name__ == "__main__":
     # Save augmented samples
     aug_output_path = OUTPUT_DIR / "MEISD_augmented_TEST.csv"
     df_aug.to_csv(aug_output_path, index=False, encoding='utf-8')
-    print(f"✅ Augmented samples saved: {aug_output_path}")
+    print(f"Augmented samples saved: {aug_output_path}")
 
     # Save quality summary
     summary = summarize_augmentation_quality(
@@ -1105,18 +1491,18 @@ if __name__ == "__main__":
     # )
     # balanced_path = OUTPUT_DIR / "MEISD_balanced_expanded.csv"
     # balanced_df.to_csv(balanced_path, index=False, encoding='utf-8')
-    # print(f"✅ Balanced dataset saved: {balanced_path}")
+    # print(f"Balanced dataset saved: {balanced_path}")
 
     print("\n" + "="*70)
-    print("✅ ALL PROCESSING COMPLETE!")
+    print("ALL PROCESSING COMPLETE!")
     print("="*70)
     print(f"\nResults:")
-    print(f"  📊 ESConv emotions analyzed: {len(esconv_processor.all_emotions)}")
-    print(f"  📊 ESConv patterns extracted: {len(esconv_processor.style_patterns)}")
-    print(f"  📊 MEISD filtered: {len(meisd_raw)} → {len(meisd_filtered)} rows")
-    print(f"  📊 Augmented samples: {len(df_aug)}")
-    print(f"  📊 Average quality: {summary['avg_quality']}")
-    print(f"\n📁 Output files:")
+    print(f"  ESConv emotions analyzed: {len(esconv_processor.all_emotions)}")
+    print(f"  ESConv patterns extracted: {len(esconv_processor.style_patterns)}")
+    print(f"  MEISD filtered: {len(meisd_raw)} → {len(meisd_filtered)} rows")
+    print(f"  Augmented samples: {len(df_aug)}")
+    print(f"  Average quality: {summary['avg_quality']}")
+    print(f"\nOutput files:")
     print(f"  - {meisd_filtered_path}")
     print(f"  - {aug_output_path}")
     print(f"  - {report_path}")
