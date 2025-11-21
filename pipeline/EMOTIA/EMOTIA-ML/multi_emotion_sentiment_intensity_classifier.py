@@ -373,7 +373,7 @@ class FocalLoss(nn.Module):
         return F_loss.mean()
 
 # -------------------------
-# Training - IMPROVED!
+# Training
 # -------------------------
 def train_epoch(model, loader, optim, scheduler, device, loss_fns, weights, config):
     model.train()
@@ -909,9 +909,9 @@ if __name__ == "__main__":
     config = DEFAULT_CONFIG.copy()
     config.update({
         "output_dir": "./outputs_multitask",
-        "epochs": 10,
-        "batch_size": 16,
-        "max_len": 128,
+        "epochs": 1, #6,
+        "batch_size": 4, #16,
+        "max_len": 50, #128,
         "learning_rate": 2e-5,
         "seed": 42,
         "w_sentiment": 1.0,
