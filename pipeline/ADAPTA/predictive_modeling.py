@@ -260,17 +260,11 @@ class EffectPredictor:
 # Który ciąg strategii jest najbardziej efektywny?
 
 # ===============================================
-# POPRAWIONA WERSJA - SequenceOptimizer z diagnostyką
+# SequenceOptimizer z diagnostyką
 # ===============================================
 
 # ===============================================
-# POPRAWIONA WERSJA - SequenceOptimizer
-# Rekonstrukcja conversation_id
-# ===============================================
-
-# ===============================================
-# POPRAWIONA WERSJA - SequenceOptimizer
-# Rekonstrukcja conversation_id
+# SequenceOptimizer
 # ===============================================
 
 class SequenceOptimizer:

@@ -32,6 +32,7 @@ import matplotlib.pyplot as plt
 import random
 import argparse
 from pathlib import Path
+
 import datetime
 
 import numpy as np
@@ -45,6 +46,7 @@ from torch.utils.data import Dataset, DataLoader
 from transformers import BertTokenizer, BertModel, logging as hf_logging
 from transformers import get_linear_schedule_with_warmup
 from tqdm import tqdm
+from transformers import AutoModel, AutoTokenizer
 
 hf_logging.set_verbosity_error()
 
@@ -52,13 +54,14 @@ hf_logging.set_verbosity_error()
 # Config
 # -------------------------
 DEFAULT_CONFIG = {
-    "bert_model": "bert-base-cased",
-    "max_len": 128,
-    "batch_size": 16,
-    "epochs": 3, #do testow 6,
+    "transformer_model": "bert-base-uncased",
+    "bert_model": "adapters",
+    "max_len": 128, #128,
+    "batch_size":16, #16,
+    "epochs": 6, #3, #do testow 6,
     "learning_rate": 2e-5,
     "weight_decay": 0.01,
-    "dropout": 0.3,
+    "dropout": 0.4, #0.3
     "lstm_hidden_dim": 128,
     "lstm_layers": 1,
     "bidirectional": True,
@@ -73,7 +76,7 @@ DEFAULT_CONFIG = {
     "use_focal_loss": True,
     "focal_alpha": 0.25,
     "focal_gamma": 2.0,
-    "warmup_ratio": 0.1,  # 10% kroków to warmup
+    "warmup_ratio": 0.2,  #0.1 -> 10% kroków to warmup
     "gradient_accumulation_steps": 1,  # Zwiększ do 4 jeśli mało RAM
 }
 
@@ -357,6 +360,328 @@ class MultiTaskBERTLSTM(nn.Module):
 
         return sentiment_logits, emotion_logits, intensity_logits
 
+class MultiTaskBERT(nn.Module):
+    def __init__(self, encoder, num_emotions, dropout=0.3):
+        super().__init__()
+        self.encoder = encoder
+        hidden = encoder.config.hidden_size
+
+        self.dropout = nn.Dropout(dropout)
+        self.shared_fc = nn.Linear(hidden, hidden // 2)
+
+        self.sentiment_head = nn.Linear(hidden // 2, 3)
+        self.emotion_head = nn.Linear(hidden // 2, num_emotions)
+        self.intensity_head = nn.Linear(hidden // 2, num_emotions * 3)
+
+    def forward(self, input_ids, attention_mask):
+        out = self.encoder(input_ids=input_ids, attention_mask=attention_mask)
+        h = out.last_hidden_state[:, 0]     # [CLS]
+
+        x = torch.relu(self.shared_fc(self.dropout(h)))
+
+        return (
+            self.sentiment_head(x),
+            self.emotion_head(x),
+            self.intensity_head(x)
+        )
+
+
+# -------------------------
+# Simple Adapter Module (bottleneck)
+# -------------------------
+class AdapterModule(nn.Module):
+    """
+    Lightweight adapter: down-proj -> nonlinearity -> up-proj + residual
+    Applied to pooled representation (CLS) or to token outputs if desired.
+    """
+    def __init__(self, hidden_size:int, bottleneck:int=64, dropout:float=0.1):
+        super().__init__()
+        self.down = nn.Linear(hidden_size, bottleneck)
+        self.up = nn.Linear(bottleneck, hidden_size)
+        self.activation = nn.ReLU()
+        self.dropout = nn.Dropout(dropout)
+
+        # init
+        nn.init.xavier_uniform_(self.down.weight)
+        nn.init.xavier_uniform_(self.up.weight)
+        nn.init.constant_(self.down.bias, 0.)
+        nn.init.constant_(self.up.bias, 0.)
+
+    def forward(self, x):
+        z = self.down(x)
+        z = self.activation(z)
+        z = self.dropout(z)
+        z = self.up(z)
+        return x + z  # residual
+
+
+# -------------------------
+# Multi-task model with adapters (hard-share encoder, adapter per task)
+# -------------------------
+class MultiTaskBERTWithAdapters(nn.Module):
+    """
+    Hard-shared encoder (one transformer) + per-task adapters applied to pooled output.
+    This is a practical 'adapter' implementation without external libs.
+    """
+    def __init__(self, transformer_name:str, num_emotions:int, adapter_bottleneck:int=64, dropout:float=0.3):
+        super().__init__()
+        self.transformer = AutoModel.from_pretrained(transformer_name)
+        hid = self.transformer.config.hidden_size
+
+        # task-specific adapters
+        self.adapter_sentiment = AdapterModule(hid, adapter_bottleneck, dropout)
+        self.adapter_emotion = AdapterModule(hid, adapter_bottleneck, dropout)
+        self.adapter_intensity = AdapterModule(hid, adapter_bottleneck, dropout)
+
+        # shared projection after adapter
+        proj_dim = hid // 2
+        self.shared_fc = nn.Linear(hid, proj_dim)
+        self.dropout = nn.Dropout(dropout)
+
+        self.sentiment_head = nn.Linear(proj_dim, 3)
+        self.emotion_head = nn.Linear(proj_dim, num_emotions)
+        self.intensity_head = nn.Linear(proj_dim, num_emotions * 3)
+
+    def forward(self, input_ids, attention_mask):
+        out = self.transformer(input_ids=input_ids, attention_mask=attention_mask)
+        pooled = out.last_hidden_state[:, 0]  # CLS pooled
+
+        s = self.adapter_sentiment(pooled)
+        e = self.adapter_emotion(pooled)
+        i = self.adapter_intensity(pooled)
+
+        # pass through shared fc
+        s_x = torch.relu(self.shared_fc(self.dropout(s)))
+        e_x = torch.relu(self.shared_fc(self.dropout(e)))
+        i_x = torch.relu(self.shared_fc(self.dropout(i)))
+
+        return self.sentiment_head(s_x), self.emotion_head(e_x), self.intensity_head(i_x)
+
+
+# -------------------------
+# MMOE core
+# -------------------------
+class MMOE_Core(nn.Module):
+    """
+    Implementation of Mixture-of-Experts layer.
+    experts: list of feed-forward networks
+    gates: per-task gate producing mixture weights
+    """
+    def __init__(self, input_dim:int, expert_hidden:int, num_experts:int, num_tasks:int, dropout:float=0.1):
+        super().__init__()
+        self.num_experts = num_experts
+        self.num_tasks = num_tasks
+        self.experts = nn.ModuleList([nn.Sequential(
+            nn.Linear(input_dim, expert_hidden),
+            nn.ReLU(),
+            nn.Dropout(dropout),
+            nn.Linear(expert_hidden, input_dim),
+            nn.ReLU()
+        ) for _ in range(num_experts)])
+
+        # per-task gating networks
+        self.gates = nn.ModuleList([nn.Sequential(
+            nn.Linear(input_dim, num_experts),
+            nn.Softmax(dim=1)
+        ) for _ in range(num_tasks)])
+
+    def forward(self, x):
+        # x: (B, D)
+        expert_outs = []  # list (num_experts) of (B, D)
+        for e in self.experts:
+            expert_outs.append(e(x))  # B x D
+
+        # stack experts -> (B, num_experts, D)
+        expert_stack = torch.stack(expert_outs, dim=1)
+
+        # For each task, compute gated sum
+        task_outputs = []
+        for g in self.gates:
+            weights = g(x)  # (B, num_experts)
+            weights = weights.unsqueeze(-1)  # (B, num_experts, 1)
+            # weighted sum over experts
+            task_out = (weights * expert_stack).sum(dim=1)  # (B, D)
+            task_outputs.append(task_out)
+        # returns list len=num_tasks of tensors (B,D)
+        return task_outputs
+
+
+# -------------------------
+# MultiTask with MMOE
+# -------------------------
+class MultiTaskMMOE(nn.Module):
+    """
+    Encoder -> MMOE -> per-task head
+    tasks: sentiment, emotion, intensity
+    """
+    def __init__(self, transformer_name:str, num_emotions:int, num_experts:int=4, expert_hidden:int=256, dropout:float=0.3):
+        super().__init__()
+        self.transformer = AutoModel.from_pretrained(transformer_name)
+        hid = self.transformer.config.hidden_size
+
+        self.mmoe = MMOE_Core(input_dim=hid, expert_hidden=expert_hidden, num_experts=num_experts, num_tasks=3, dropout=dropout)
+
+        # heads after task-specific mixture outputs
+        self.sent_fc = nn.Sequential(nn.Linear(hid, hid//2), nn.ReLU(), nn.Dropout(dropout))
+        self.em_fc = nn.Sequential(nn.Linear(hid, hid//2), nn.ReLU(), nn.Dropout(dropout))
+        self.int_fc = nn.Sequential(nn.Linear(hid, hid//2), nn.ReLU(), nn.Dropout(dropout))
+
+        self.sentiment_head = nn.Linear(hid//2, 3)
+        self.emotion_head = nn.Linear(hid//2, num_emotions)
+        self.intensity_head = nn.Linear(hid//2, num_emotions * 3)
+
+    def forward(self, input_ids, attention_mask):
+        out = self.transformer(input_ids=input_ids, attention_mask=attention_mask)
+        pooled = out.last_hidden_state[:, 0]  # (B, hid)
+
+        task_feats = self.mmoe(pooled)  # list len 3 of (B, hid)
+        s_feat, e_feat, i_feat = task_feats
+
+        s_x = self.sent_fc(s_feat)
+        e_x = self.em_fc(e_feat)
+        i_x = self.int_fc(i_feat)
+
+        return self.sentiment_head(s_x), self.emotion_head(e_x), self.intensity_head(i_x)
+
+
+# -------------------------
+# Soft-sharing model
+# -------------------------
+class SoftSharingModel(nn.Module):
+    """
+    Soft-sharing: separate encoders but penalize divergence between encoder parameters (L2)
+    We'll expose a method get_soft_sharing_loss() which computes extra reg loss.
+    """
+    def __init__(self, transformer_name:str, num_emotions:int, dropout:float=0.3):
+        super().__init__()
+        # Separate encoders for each task
+        self.encoder_sent = AutoModel.from_pretrained(transformer_name)
+        self.encoder_em = AutoModel.from_pretrained(transformer_name)
+        self.encoder_int = AutoModel.from_pretrained(transformer_name)
+
+        hid = self.encoder_sent.config.hidden_size
+        proj_dim = hid // 2
+
+        # shared-ish heads after separate encoders
+        self.shared_fc = nn.Linear(hid, proj_dim)
+        self.dropout = nn.Dropout(dropout)
+
+        self.sentiment_head = nn.Linear(proj_dim, 3)
+        self.emotion_head = nn.Linear(proj_dim, num_emotions)
+        self.intensity_head = nn.Linear(proj_dim, num_emotions * 3)
+
+    def forward(self, input_ids, attention_mask):
+        out_s = self.encoder_sent(input_ids=input_ids, attention_mask=attention_mask).last_hidden_state[:,0]
+        out_e = self.encoder_em(input_ids=input_ids, attention_mask=attention_mask).last_hidden_state[:,0]
+        out_i = self.encoder_int(input_ids=input_ids, attention_mask=attention_mask).last_hidden_state[:,0]
+
+        s = torch.relu(self.shared_fc(self.dropout(out_s)))
+        e = torch.relu(self.shared_fc(self.dropout(out_e)))
+        i = torch.relu(self.shared_fc(self.dropout(out_i)))
+
+        return self.sentiment_head(s), self.emotion_head(e), self.intensity_head(i)
+
+    def get_soft_sharing_loss(self, l2_lambda:float=1e-4):
+        """
+        Compute L2 distance between matching parameter tensors of encoders.
+        This is a simple soft-sharing regularizer.
+        """
+        loss = 0.0
+        # iterate over named params of one encoder and compare shapes
+        for (n1,p1), (n2,p2), (n3,p3) in zip(self.encoder_sent.named_parameters(),
+                                             self.encoder_em.named_parameters(),
+                                             self.encoder_int.named_parameters()):
+            if p1.shape == p2.shape:
+                loss = loss + ((p1 - p2).pow(2).sum() + (p1 - p3).pow(2).sum())
+        return l2_lambda * loss
+
+
+# -------------------------
+# Cross-stitch simple implementation (2-way cross-stitch between encoders)
+# -------------------------
+class CrossStitchModel(nn.Module):
+    """
+    Cross-stitch networks: learn linear combination of feature maps from different tasks.
+    We'll implement a simplified cross-stitch between {sent, emotion+intensity} streams.
+    """
+    def __init__(self, transformer_name:str, num_emotions:int, dropout:float=0.3):
+        super().__init__()
+        self.encoder_a = AutoModel.from_pretrained(transformer_name)  # e.g. sentiment
+        self.encoder_b = AutoModel.from_pretrained(transformer_name)  # e.g. emotion/intensity
+
+        hid = self.encoder_a.config.hidden_size
+        self.cross_coeff = nn.Parameter(torch.eye(2))  # 2x2 cross-stitch matrix (learnable)
+        self.shared_fc = nn.Linear(hid, hid//2)
+        self.dropout = nn.Dropout(dropout)
+
+        self.sentiment_head = nn.Linear(hid//2, 3)
+        self.emotion_head = nn.Linear(hid//2, num_emotions)
+        self.intensity_head = nn.Linear(hid//2, num_emotions * 3)
+
+    def forward(self, input_ids, attention_mask):
+        a = self.encoder_a(input_ids=input_ids, attention_mask=attention_mask).last_hidden_state[:,0]  # BxH
+        b = self.encoder_b(input_ids=input_ids, attention_mask=attention_mask).last_hidden_state[:,0]  # BxH
+
+        # combine features via learned 2x2 matrix per batch (applied same for all dims)
+        # [a'; b'] = cross_coeff @ [a; b]
+        stacked = torch.stack([a, b], dim=1)  # (B, 2, H)
+        # apply mixing: for each batch, for each feature dimension mixing is same matrix -> do matmul
+        # Result: (B, 2, H) -> reshape -> apply
+        coeff = self.cross_coeff.unsqueeze(0)  # (1,2,2)
+        mixed = torch.matmul(coeff, stacked)  # (1,2,2) x (B,2,H) -> broadcasting -> (B,2,H)
+        a_m = mixed[:,0,:]  # (B,H)
+        b_m = mixed[:,1,:]
+
+        # use a_m for sentiment, b_m for emotion+intensity (shared)
+        s = torch.relu(self.shared_fc(self.dropout(a_m)))
+        e = torch.relu(self.shared_fc(self.dropout(b_m)))
+        i = torch.relu(self.shared_fc(self.dropout(b_m)))
+
+        return self.sentiment_head(s), self.emotion_head(e), self.intensity_head(i)
+
+
+# -------------------------
+# Single-task wrappers (for baselines)
+# -------------------------
+class SingleTaskSentiment(nn.Module):
+    def __init__(self, transformer_name:str, dropout:float=0.3):
+        super().__init__()
+        self.encoder = AutoModel.from_pretrained(transformer_name)
+        hid = self.encoder.config.hidden_size
+        self.fc = nn.Sequential(nn.Linear(hid, hid//2), nn.ReLU(), nn.Dropout(dropout))
+        self.head = nn.Linear(hid//2, 3)
+
+    def forward(self, input_ids, attention_mask):
+        out = self.encoder(input_ids=input_ids, attention_mask=attention_mask).last_hidden_state[:,0]
+        x = self.fc(out)
+        return self.head(x)
+
+class SingleTaskEmotion(nn.Module):
+    def __init__(self, transformer_name:str, num_emotions:int, dropout:float=0.3):
+        super().__init__()
+        self.encoder = AutoModel.from_pretrained(transformer_name)
+        hid = self.encoder.config.hidden_size
+        self.fc = nn.Sequential(nn.Linear(hid, hid//2), nn.ReLU(), nn.Dropout(dropout))
+        self.head = nn.Linear(hid//2, num_emotions)
+
+    def forward(self, input_ids, attention_mask):
+        out = self.encoder(input_ids=input_ids, attention_mask=attention_mask).last_hidden_state[:,0]
+        x = self.fc(out)
+        return self.head(x)
+
+class SingleTaskIntensity(nn.Module):
+    def __init__(self, transformer_name:str, num_emotions:int, dropout:float=0.3):
+        super().__init__()
+        self.encoder = AutoModel.from_pretrained(transformer_name)
+        hid = self.encoder.config.hidden_size
+        self.fc = nn.Sequential(nn.Linear(hid, hid//2), nn.ReLU(), nn.Dropout(dropout))
+        self.head = nn.Linear(hid//2, num_emotions*3)
+
+    def forward(self, input_ids, attention_mask):
+        out = self.encoder(input_ids=input_ids, attention_mask=attention_mask).last_hidden_state[:,0]
+        x = self.fc(out)
+        return self.head(x)
+
 # -------------------------
 # Focal Loss
 # -------------------------
@@ -410,9 +735,14 @@ def train_epoch(model, loader, optim, scheduler, device, loss_fns, weights, conf
                 weights['w_emotion'] * emotion_loss +
                 weights['w_intensity'] * intensity_loss)
 
+        # jeśli model ma get_soft_sharing_loss method => add it
+        if hasattr(model, "get_soft_sharing_loss"):
+            loss = loss + model.get_soft_sharing_loss(l2_lambda=config.get("soft_sharing_lambda", 1e-4))
+
         # Gradient accumulation
         loss = loss / accumulation_steps
         loss.backward()
+
 
         running_batch += 1
         if running_batch % accumulation_steps == 0:
@@ -439,10 +769,18 @@ def train_epoch(model, loader, optim, scheduler, device, loss_fns, weights, conf
             # Zawsze trzymaj wymiary takie same jak emotions
             if emotions.shape[1] > 1:
                 # Multi-label or one-hot encoded emotion matrix (B, num_emotions)
-                em_preds = (torch.sigmoid(e_logits) >= 0.5).long().cpu().numpy()
+                # em_preds = (torch.sigmoid(e_logits) >= 0.5).long().cpu().numpy()
+
+                # jeśli żadna emocja nie przekroczy progu → wybierz NAJBARDZIEJ prawdopodobną
+                probs = torch.sigmoid(e_logits)
+                em_preds = (probs >= 0.4).long()
+                for i in range(len(em_preds)):
+                    if em_preds[i].sum() == 0:
+                        em_preds[i, torch.argmax(probs[i])] = 1
+
             else:
-                # Truly single column (B,)
-                em_preds = torch.argmax(e_logits, dim=1).cpu().numpy().reshape(-1, 1)
+                    # Truly single column (B,)
+                    em_preds = torch.argmax(e_logits, dim=1).cpu().numpy().reshape(-1, 1)
 
 
             all_emotion_preds.extend(em_preds.tolist())
@@ -602,7 +940,14 @@ def run_pipeline(csv_path, config):
         presence = emotions[:, i].sum()
         print(f"  {ename}: {presence}/{len(emotions)} ({100*presence/len(emotions):.1f}%)")
 
-    tokenizer = BertTokenizer.from_pretrained(config['bert_model'])
+    # --- LOAD TOKENIZER + ENCODER (shared for all architectures) ---
+    if config["transformer_model"] == "bert":
+        tokenizer = BertTokenizer.from_pretrained(config["transformer_model"])
+        encoder = BertModel.from_pretrained(config["transformer_model"])
+    else:
+        tokenizer = AutoTokenizer.from_pretrained(config["transformer_model"])
+        encoder = AutoModel.from_pretrained(config["transformer_model"])
+
     train_ds = MultiTaskDataset(X_train, y_train, e_train, i_train, tokenizer, config['max_len'])
     val_ds = MultiTaskDataset(X_val, y_val, e_val, i_val, tokenizer, config['max_len'])
 
@@ -611,8 +956,64 @@ def run_pipeline(csv_path, config):
 
     device = torch.device(config['device'])
     print(f"Device: {device}")
+    emotion_freq = emotions.mean(axis=0)
+    emotion_weights = torch.tensor(1/(emotion_freq+1e-6), dtype=torch.float).to(device)
 
-    bert_model = BertModel.from_pretrained(config['bert_model'])
+    # --- SELECT MULTI-TASK ARCHITECTURE ---
+    if config["model_type"] == "bert":
+        model = MultiTaskBERT(
+            encoder=encoder,
+            num_emotions=num_emotions,
+            dropout=config["dropout"]
+        )
+    elif config["model_type"] == "bert_lstm":
+        model = MultiTaskBERTLSTM(
+            bert_model=encoder,
+            num_emotions=num_emotions,
+            lstm_hidden=config["lstm_hidden_dim"],
+            lstm_layers=config["lstm_layers"],
+            dropout=config["dropout"],
+            bidirectional=config["bidirectional"]
+        )
+    elif config["model_type"] == "adapters":
+        adapter_bottleneck = config.get("adapter_bottleneck", 64)
+        model = MultiTaskBERTWithAdapters(
+            transformer_name=config["transformer_model"],
+            num_emotions=num_emotions,
+            adapter_bottleneck=adapter_bottleneck,
+            dropout=config["dropout"]
+        )
+    elif config["model_type"] == "mmoe":
+        model = MultiTaskMMOE(
+            transformer_name=config["transformer_model"],
+            num_emotions=num_emotions,
+            num_experts=config.get("num_experts", 4),
+            expert_hidden=config.get("expert_hidden", 256),
+            dropout=config["dropout"]
+        )
+    elif config["model_type"] == "soft_sharing":
+        model = SoftSharingModel(
+            transformer_name=config["transformer_model"],
+            num_emotions=num_emotions,
+            dropout=config["dropout"]
+        )
+    elif config["model_type"] == "cross_stitch":
+        model = CrossStitchModel(
+            transformer_name=config["transformer_model"],
+            num_emotions=num_emotions,
+            dropout=config["dropout"]
+        )
+    elif config["model_type"] in ("single_sentiment","single_emotion","single_intensity"):
+        if config["model_type"] == "single_sentiment":
+            model = SingleTaskSentiment(transformer_name=config["transformer_model"])
+        elif config["model_type"] == "single_emotion":
+            model = SingleTaskEmotion(transformer_name=config["transformer_model"], num_emotions=num_emotions)
+        else:
+            model = SingleTaskIntensity(transformer_name=config["transformer_model"], num_emotions=num_emotions)
+    else:
+        raise ValueError(f"Unknown model type: {config['model_type']}")
+
+    model.to(device)
     # model = MultiTaskBERTLSTM(
     #     bert_model=bert_model,
     #     num_emotions=num_emotions,
@@ -621,16 +1022,6 @@ def run_pipeline(csv_path, config):
     #     dropout=config['dropout'],
     #     bidirectional=config['bidirectional']
     # ).to(device)
-
-    # Utwórz model
-    model = MultiTaskBERTLSTM(
-        bert_model=bert_model,
-        num_emotions=num_emotions,
-        lstm_hidden=config['lstm_hidden_dim'],
-        lstm_layers=config['lstm_layers'],
-        dropout=config['dropout'],
-        bidirectional=config['bidirectional']
-    ).to(device)
 
     unique_classes = np.unique(y_train)
     class_weights = compute_class_weight('balanced', classes=unique_classes, y=y_train)
@@ -641,29 +1032,29 @@ def run_pipeline(csv_path, config):
 
     class_weights_tensor = torch.tensor(weights_full, dtype=torch.float).to(device)
 
-
-# 📦 Dobierz funkcje strat w zależności od trybu danych
-    if mode_type == "multi-label":
-        loss_fns = {
-            "sentiment": nn.CrossEntropyLoss(weight=class_weights_tensor),
-            "emotion": FocalLoss(alpha=config['focal_alpha'], gamma=config['focal_gamma']) if config['use_focal_loss'] else nn.BCEWithLogitsLoss(),
-            "intensity": nn.CrossEntropyLoss()
-        }
-    else:  # single-emotion
-        loss_fns = {
-            "sentiment": nn.CrossEntropyLoss(weight=class_weights_tensor),
-            "emotion": nn.CrossEntropyLoss(),
-            "intensity": nn.CrossEntropyLoss()
-        }
-
+# # 📦 Dobierz funkcje strat w zależności od trybu danych
+#     if mode_type == "multi-label":
+#         loss_fns = {
+#             "sentiment": nn.CrossEntropyLoss(weight=class_weights_tensor),
+#             "emotion": FocalLoss(alpha=config['focal_alpha'], gamma=config['focal_gamma']) if config['use_focal_loss'] else nn.BCEWithLogitsLoss(),
+#             "intensity": nn.CrossEntropyLoss()
+#         }
+#     else:  # single-emotion
+#         loss_fns = {
+#             "sentiment": nn.CrossEntropyLoss(weight=class_weights_tensor),
+#             "emotion": nn.CrossEntropyLoss(),
+#             "intensity": nn.CrossEntropyLoss()
+#         }
 
 
 
-    # loss_fns = {
-    #     "sentiment": nn.CrossEntropyLoss(weight=class_weights_tensor),
-    #     "emotion": FocalLoss(alpha=config['focal_alpha'], gamma=config['focal_gamma']) if config['use_focal_loss'] else nn.BCEWithLogitsLoss(),
-    #     "intensity": nn.CrossEntropyLoss()
-    # }
+
+    loss_fns = {
+        "sentiment": nn.CrossEntropyLoss(weight=class_weights_tensor),
+        #"emotion": FocalLoss(alpha=config['focal_alpha'], gamma=config['focal_gamma']) if config['use_focal_loss'] else nn.BCEWithLogitsLoss(),
+        'emotion': FocalLoss(alpha=emotion_weights, gamma=config['focal_gamma']),
+        "intensity": nn.CrossEntropyLoss()
+    }
 
     optimizer = torch.optim.AdamW(
         model.parameters(),
@@ -673,7 +1064,6 @@ def run_pipeline(csv_path, config):
         eps=1e-8
     )
 
-    # ⭐ NEW: Learning rate warmup scheduler
     num_training_steps = len(train_loader) * config['epochs']
     num_warmup_steps = int(num_training_steps * config['warmup_ratio'])
 
@@ -901,28 +1291,95 @@ def run_pipeline(csv_path, config):
 # -------------------------
 if __name__ == "__main__":
     start_time = time.time()
-    csv_path = "D:/julixus/meisd_project/pipeline/EMOTIA/EMOTIA-DA/outputs/multilabel_augmented_onehot.csv"
+    BASE_DIR = Path(__file__).resolve().parent
+    PROJECT_DIR = BASE_DIR.parent.parent #C:\Users\juwieczo\DataspellProjects\meisd_project\pipeline
+    csv_path = PROJECT_DIR / "EMOTIA" / "EMOTIA-DA" / "outputs22112025" / "multilabel_augmented_onehot_11222025.csv"
 
     if not Path(csv_path).exists():
         raise FileNotFoundError(f"CSV file not found: {csv_path}")
 
     config = DEFAULT_CONFIG.copy()
+
+    # ==============================================================
+    # DO WYBORU: MODEL_TYPE  — główna architektura modelu
+    # ==============================================================
+    #
+    # "bert"                    → klasyczny encoder-only multitask
+    # "bert_lstm"               → encoder + LSTM + multitask heads
+    #
+    # "adapters"                → BERT z adapterami (per-task adapters)
+    # "mmoe"                    → Mixture-of-Experts multitask model
+    # "soft_sharing"            → 3 osobne encodery + soft parameter sharing
+    # "cross_stitch"            → cross-stitch networks (mixing encoders)
+    #
+    # Single-task baseline models:
+    # "single_sentiment"        → tylko zadanie sentymentu
+    # "single_emotion"          → tylko zadanie emocji
+    # "single_intensity"        → tylko intensywność
+    #
+    # Przykład:
+    #     "model_type": "adapters"
+    #     "model_type": "mmoe"
+    #     "model_type": "soft_sharing"
+    #     "model_type": "bert_lstm"
+    #
+    # ==============================================================
+    # DO WYBORU: TRANSFORMER_MODEL — encoder językowy
+    # ==============================================================
+    #
+    # Standardowe modele BERT:
+    #   "bert-base-cased"
+    #   "bert-base-uncased"
+    #
+    # Modele RoBerta:
+    #   "roberta-base"
+    #   "roberta-large"                (uwaga na GPU)
+    #
+    # Modele XLM / wielojęzyczne:
+    #   "xlm-roberta-base"
+    #   "xlm-roberta-large"            (bardzo ciężki)
+    #
+    # Modele DEEP-MO:
+    #   "cardiffnlp/twitter-roberta-base-emotion"
+    #
+    # Przykład:
+    #   "transformer_model": "bert-base-cased"
+    #   "transformer_model": "xlm-roberta-base"
+    #
+    # ==============================================================
+    # DODATKOWE PARAMETRY (opcjonalne dla niektórych modeli)
+    # ==============================================================
+    #
+    # Adaptery:
+    #   "adapter_bottleneck": 64  # szerokość bottleneck adaptera
+    #
+    # MMOE:
+    #   "num_experts": 4
+    #   "expert_hidden": 256
+    #
+    # Soft-sharing:
+    #   "soft_sharing_lambda": 1e-4   # siła regularizacji L2
+    #
+    # ==============================================================
+
     config.update({
+        "model_type": "adapters", # architektura
+        "transformer_model": "bert-base-uncased", # model jezykowy
         "output_dir": "./outputs_multitask",
-        "epochs": 5,
-        "batch_size": 16,
-        "max_len": 128,
+        "epochs": 6, #5,
+        "batch_size": 16, #16,
+        "max_len": 128, #128,
         "learning_rate": 2e-5,
         "seed": 42,
         "w_sentiment": 1.0,
-        "w_emotion": 1.0,
+        "w_emotion": 2.0,
         "w_intensity": 0.7,
         "early_stopping_patience": 2, #3
         # NEW SETTINGS
         "use_focal_loss": True,
         "focal_alpha": 0.25,
         "focal_gamma": 2.0,
-        "warmup_ratio": 0.1,
+        "warmup_ratio": 0.2, #0.1
         "gradient_accumulation_steps": 1  # Zwiększ do 4 jeśli mało GPU RAM
     })
 
@@ -992,3 +1449,4 @@ if __name__ == "__main__":
 
 
     print("\nAll done! Check outputs in:", config['output_dir'])
+#%%
