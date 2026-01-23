@@ -55,7 +55,7 @@ hf_logging.set_verbosity_error()
 # -------------------------
 DEFAULT_CONFIG = {
     "transformer_model": "bert-base-uncased",
-    "bert_model": "adapters",
+    "bert_model": "soft-sharing",
     "max_len": 128, #128,
     "batch_size":16, #16,
     "epochs": 6, #3, #do testow 6,
@@ -543,6 +543,46 @@ class MultiTaskMMOE(nn.Module):
 
         return self.sentiment_head(s_x), self.emotion_head(e_x), self.intensity_head(i_x)
 
+# -------------------------
+# Single-task model
+# -------------------------
+class SingleTaskModel(nn.Module):
+    def __init__(self, transformer_name: str, task: str, num_emotions: int, dropout: float = 0.3):
+        super().__init__()
+        self.task = task
+
+        self.encoder = AutoModel.from_pretrained(transformer_name)
+        hid = self.encoder.config.hidden_size
+
+        self.dropout = nn.Dropout(dropout)
+
+        if task == "sentiment":
+            self.head = nn.Linear(hid, 3)
+
+        elif task == "emotion":
+            self.head = nn.Linear(hid, num_emotions)
+
+        elif task == "intensity":
+            self.head = nn.Linear(hid, num_emotions * 3)
+
+        else:
+            raise ValueError(f"Unknown task: {task}")
+
+    def forward(self, input_ids, attention_mask):
+        h = self.encoder(
+            input_ids=input_ids,
+            attention_mask=attention_mask
+        ).last_hidden_state[:, 0]
+
+        h = self.dropout(h)
+        logits = self.head(h)
+
+        return {
+            "sentiment": logits if self.task == "sentiment" else None,
+            "emotion": logits if self.task == "emotion" else None,
+            "intensity": logits if self.task == "intensity" else None
+        }
+
 
 # -------------------------
 # Soft-sharing model
@@ -593,6 +633,58 @@ class SoftSharingModel(nn.Module):
                                              self.encoder_int.named_parameters()):
             if p1.shape == p2.shape:
                 loss = loss + ((p1 - p2).pow(2).sum() + (p1 - p3).pow(2).sum())
+        return l2_lambda * loss
+
+class SoftSharingModel(nn.Module):
+    """
+    Soft-sharing encoder-only model.
+    Obsługuje: 1 task, 2 taski, 3 taski.
+    """
+    def __init__(self, transformer_name, num_emotions, tasks, dropout=0.3):
+        super().__init__()
+        self.tasks = tasks
+
+        self.encoders = nn.ModuleDict({
+            task: AutoModel.from_pretrained(transformer_name)
+            for task in tasks
+        })
+
+        hid = next(iter(self.encoders.values())).config.hidden_size
+        proj = hid // 2
+
+        self.shared_fc = nn.Linear(hid, proj)
+        self.dropout = nn.Dropout(dropout)
+
+        self.heads = nn.ModuleDict()
+        if "sentiment" in tasks:
+            self.heads["sentiment"] = nn.Linear(proj, 3)
+        if "emotion" in tasks:
+            self.heads["emotion"] = nn.Linear(proj, num_emotions)
+        if "intensity" in tasks:
+            self.heads["intensity"] = nn.Linear(proj, num_emotions * 3)
+
+    def forward(self, input_ids, attention_mask):
+        outputs = {"sentiment": None, "emotion": None, "intensity": None}
+
+        for task, encoder in self.encoders.items():
+            h = encoder(
+                input_ids=input_ids,
+                attention_mask=attention_mask
+            ).last_hidden_state[:, 0]
+
+            x = torch.relu(self.shared_fc(self.dropout(h)))
+            outputs[task] = self.heads[task](x)
+
+        return outputs
+
+    def get_soft_sharing_loss(self, l2_lambda=1e-4):
+        loss = 0.0
+        encs = list(self.encoders.values())
+        for i in range(len(encs)):
+            for j in range(i + 1, len(encs)):
+                for p1, p2 in zip(encs[i].parameters(), encs[j].parameters()):
+                    if p1.shape == p2.shape:
+                        loss += (p1 - p2).pow(2).sum()
         return l2_lambda * loss
 
 
@@ -701,6 +793,7 @@ class FocalLoss(nn.Module):
 # Training
 # -------------------------
 def train_epoch(model, loader, optim, scheduler, device, loss_fns, weights, config):
+    #przy multi-task learning
     model.train()
     running_loss = 0.0
     all_sent_preds, all_sent_labels = [], []
@@ -718,6 +811,7 @@ def train_epoch(model, loader, optim, scheduler, device, loss_fns, weights, conf
         intensities = batch['intensities'].to(device)
 
         s_logits, e_logits, i_logits = model(input_ids, attention_mask)
+        #outputs = model(input_ids, attention_mask)
 
         sentiment_loss = loss_fns['sentiment'](s_logits, sentiments)
         emotion_loss = loss_fns['emotion'](e_logits, emotions)
@@ -822,7 +916,126 @@ def train_epoch(model, loader, optim, scheduler, device, loss_fns, weights, conf
         "int_acc": float(int_acc)
     }
 
+def train_epoch(model, loader, optim, scheduler, device, loss_fns, weights, config):
+    model.train()
+    running_loss = 0.0
+
+    all_sent_preds, all_sent_labels = [], []
+    all_emotion_preds, all_emotion_labels = [], []
+    all_int_preds, all_int_labels = [], []
+
+    accumulation_steps = config.get("gradient_accumulation_steps", 1)
+    running_batch = 0
+
+    for batch in tqdm(loader, desc="Train", leave=False):
+        input_ids = batch["input_ids"].to(device)
+        attention_mask = batch["attention_mask"].to(device)
+
+        sentiments = batch.get("sentiment")
+        emotions = batch.get("emotions")
+        intensities = batch.get("intensities")
+
+        if sentiments is not None:
+            sentiments = sentiments.to(device)
+        if emotions is not None:
+            emotions = emotions.to(device)
+        if intensities is not None:
+            intensities = intensities.to(device)
+
+        outputs = model(input_ids, attention_mask)
+        loss = 0.0
+
+        # ---------- SENTIMENT ----------
+        if outputs["sentiment"] is not None:
+            sent_loss = loss_fns["sentiment"](outputs["sentiment"], sentiments)
+            loss += weights["w_sentiment"] * sent_loss
+
+        # ---------- EMOTION ----------
+        if outputs["emotion"] is not None:
+            emo_loss = loss_fns["emotion"](outputs["emotion"], emotions)
+            loss += weights["w_emotion"] * emo_loss
+
+        # ---------- INTENSITY ----------
+        if outputs["intensity"] is not None:
+            B = outputs["intensity"].size(0)
+            num_emotions = intensities.size(1)
+
+            i_logits = outputs["intensity"].view(B, num_emotions, 3)
+            int_loss = 0.0
+            for j in range(num_emotions):
+                int_loss += loss_fns["intensity"](i_logits[:, j, :], intensities[:, j])
+            int_loss = int_loss / float(num_emotions)
+
+            loss += weights["w_intensity"] * int_loss
+
+        # ---------- SOFT SHARING REG ----------
+        if hasattr(model, "get_soft_sharing_loss"):
+            loss += model.get_soft_sharing_loss(
+                l2_lambda=config.get("soft_sharing_lambda", 1e-4)
+            )
+
+        # ---------- BACKPROP ----------
+        loss = loss / accumulation_steps
+        loss.backward()
+
+        running_batch += 1
+        if running_batch % accumulation_steps == 0:
+            torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+            optim.step()
+            scheduler.step()
+            optim.zero_grad()
+
+        running_loss += loss.item() * accumulation_steps
+
+        # ---------- METRICS (only if task exists) ----------
+        with torch.no_grad():
+            if outputs["sentiment"] is not None:
+                preds = torch.argmax(outputs["sentiment"], dim=1).cpu().numpy()
+                all_sent_preds.extend(preds.tolist())
+                all_sent_labels.extend(sentiments.cpu().numpy().tolist())
+
+            if outputs["emotion"] is not None:
+                probs = torch.sigmoid(outputs["emotion"])
+                em_preds = (probs >= 0.4).long()
+
+                for i in range(len(em_preds)):
+                    if em_preds[i].sum() == 0:
+                        em_preds[i, torch.argmax(probs[i])] = 1
+
+                all_emotion_preds.extend(em_preds.cpu().numpy().tolist())
+                all_emotion_labels.extend(emotions.cpu().numpy().tolist())
+
+            if outputs["intensity"] is not None:
+                preds = torch.argmax(i_logits, dim=2).cpu().numpy()
+                all_int_preds.extend(preds.tolist())
+                all_int_labels.extend(intensities.cpu().numpy().tolist())
+
+    avg_loss = running_loss / len(loader)
+
+    metrics = {"loss": avg_loss}
+
+    if all_sent_preds:
+        metrics["sent_acc"] = accuracy_score(all_sent_labels, all_sent_preds)
+        metrics["sent_f1"] = f1_score(
+            all_sent_labels, all_sent_preds, average="macro", zero_division=0
+        )
+
+    if all_emotion_preds:
+        em_pred_flat = np.array(all_emotion_preds).reshape(-1)
+        em_label_flat = np.array(all_emotion_labels).reshape(-1)
+        metrics["em_f1_micro"] = f1_score(
+            em_label_flat, em_pred_flat, average="micro", zero_division=0
+        )
+
+    if all_int_preds:
+        int_preds_arr = np.array(all_int_preds)
+        int_labels_arr = np.array(all_int_labels)
+        metrics["int_acc"] = float((int_preds_arr == int_labels_arr).mean())
+
+    return metrics
+
 def eval_epoch(model, loader, device, loss_fns, weights):
+    #przy multi-task learning
     model.eval()
     running_loss = 0.0
     all_sent_preds, all_sent_labels = [], []
@@ -901,6 +1114,98 @@ def eval_epoch(model, loader, device, loss_fns, weights):
 
     return metrics, raw_outputs
 
+def eval_epoch(model, loader, device, loss_fns, weights):
+    model.eval()
+    running_loss = 0.0
+
+    all_sent_preds, all_sent_labels = [], []
+    all_emotion_preds, all_emotion_labels = [], []
+    all_int_preds, all_int_labels = [], []
+
+    with torch.no_grad():
+        for batch in tqdm(loader, desc="Eval", leave=False):
+            input_ids = batch["input_ids"].to(device)
+            attention_mask = batch["attention_mask"].to(device)
+
+            sentiments = batch.get("sentiment")
+            emotions = batch.get("emotions")
+            intensities = batch.get("intensities")
+
+            if sentiments is not None:
+                sentiments = sentiments.to(device)
+            if emotions is not None:
+                emotions = emotions.to(device)
+            if intensities is not None:
+                intensities = intensities.to(device)
+
+            outputs = model(input_ids, attention_mask)
+            loss = 0.0
+
+            if outputs["sentiment"] is not None:
+                loss += weights["w_sentiment"] * loss_fns["sentiment"](
+                    outputs["sentiment"], sentiments
+                )
+
+                preds = torch.argmax(outputs["sentiment"], dim=1).cpu().numpy()
+                all_sent_preds.extend(preds.tolist())
+                all_sent_labels.extend(sentiments.cpu().numpy().tolist())
+
+            if outputs["emotion"] is not None:
+                loss += weights["w_emotion"] * loss_fns["emotion"](
+                    outputs["emotion"], emotions
+                )
+
+                em_preds = (torch.sigmoid(outputs["emotion"]) >= 0.5).long()
+                all_emotion_preds.extend(em_preds.cpu().numpy().tolist())
+                all_emotion_labels.extend(emotions.cpu().numpy().tolist())
+
+            if outputs["intensity"] is not None:
+                B = outputs["intensity"].size(0)
+                num_emotions = intensities.size(1)
+                i_logits = outputs["intensity"].view(B, num_emotions, 3)
+
+                int_loss = 0.0
+                for j in range(num_emotions):
+                    int_loss += loss_fns["intensity"](i_logits[:, j, :], intensities[:, j])
+                loss += weights["w_intensity"] * (int_loss / num_emotions)
+
+                preds = torch.argmax(i_logits, dim=2).cpu().numpy()
+                all_int_preds.extend(preds.tolist())
+                all_int_labels.extend(intensities.cpu().numpy().tolist())
+
+            running_loss += loss.item()
+
+    metrics = {"loss": running_loss / len(loader)}
+
+    if all_sent_preds:
+        metrics["sent_acc"] = accuracy_score(all_sent_labels, all_sent_preds)
+        metrics["sent_f1"] = f1_score(
+            all_sent_labels, all_sent_preds, average="macro", zero_division=0
+        )
+
+    if all_emotion_preds:
+        em_pred_flat = np.array(all_emotion_preds).reshape(-1)
+        em_label_flat = np.array(all_emotion_labels).reshape(-1)
+        metrics["em_f1_micro"] = f1_score(
+            em_label_flat, em_pred_flat, average="micro", zero_division=0
+        )
+
+    if all_int_preds:
+        int_preds_arr = np.array(all_int_preds)
+        int_labels_arr = np.array(all_int_labels)
+        metrics["int_acc"] = float((int_preds_arr == int_labels_arr).mean())
+
+    raw_outputs = {
+        "sent_preds": all_sent_preds,
+        "sent_labels": all_sent_labels,
+        "em_preds": all_emotion_preds,
+        "em_labels": all_emotion_labels,
+        "int_preds": all_int_preds,
+        "int_labels": all_int_labels,
+    }
+
+    return metrics, raw_outputs
+
 # -------------------------
 # Pipeline - FIXED & IMPROVED!
 # -------------------------
@@ -966,6 +1271,13 @@ def run_pipeline(csv_path, config):
             num_emotions=num_emotions,
             dropout=config["dropout"]
         )
+    elif config["model_type"] == "single_task":
+        model = SingleTaskModel(
+            transformer_name=config["transformer_model"],
+            task=config["task"][0],
+            num_emotions=num_emotions,
+            dropout=config["dropout"]
+        )
     elif config["model_type"] == "bert_lstm":
         model = MultiTaskBERTLSTM(
             bert_model=encoder,
@@ -995,6 +1307,7 @@ def run_pipeline(csv_path, config):
         model = SoftSharingModel(
             transformer_name=config["transformer_model"],
             num_emotions=num_emotions,
+            tasks=config["tasks"],
             dropout=config["dropout"]
         )
     elif config["model_type"] == "cross_stitch":
@@ -1322,6 +1635,7 @@ if __name__ == "__main__":
     #     "model_type": "mmoe"
     #     "model_type": "soft_sharing"
     #     "model_type": "bert_lstm"
+    #     "model_type": "single_task"
     #
     # ==============================================================
     # DO WYBORU: TRANSFORMER_MODEL — encoder językowy
@@ -1363,8 +1677,9 @@ if __name__ == "__main__":
     # ==============================================================
 
     config.update({
-        "model_type": "adapters", # architektura
+        "model_type": "single_task", # architektura
         "transformer_model": "bert-base-uncased", # model jezykowy
+        "task": ["sentiment"], #"emotion", "intensity" lub oba na raz do 2-task
         "output_dir": "./outputs_multitask",
         "epochs": 6, #5,
         "batch_size": 16, #16,
