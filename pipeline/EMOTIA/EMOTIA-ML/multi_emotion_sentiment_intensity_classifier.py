@@ -379,11 +379,11 @@ class MultiTaskBERT(nn.Module):
 
         x = torch.relu(self.shared_fc(self.dropout(h)))
 
-        return (
-            self.sentiment_head(x),
-            self.emotion_head(x),
-            self.intensity_head(x)
-        )
+        return {
+            "sentiment": self.sentiment_head(x),
+            "emotion": self.emotion_head(x),
+            "intensity": self.intensity_head(x)
+        }
 
 
 # -------------------------
@@ -455,7 +455,11 @@ class MultiTaskBERTWithAdapters(nn.Module):
         e_x = torch.relu(self.shared_fc(self.dropout(e)))
         i_x = torch.relu(self.shared_fc(self.dropout(i)))
 
-        return self.sentiment_head(s_x), self.emotion_head(e_x), self.intensity_head(i_x)
+        return {
+            "sentiment": self.sentiment_head(s_x),
+            "emotion": self.emotion_head(e_x),
+            "intensity": self.intensity_head(i_x)
+        }
 
 
 # -------------------------
@@ -541,7 +545,12 @@ class MultiTaskMMOE(nn.Module):
         e_x = self.em_fc(e_feat)
         i_x = self.int_fc(i_feat)
 
-        return self.sentiment_head(s_x), self.emotion_head(e_x), self.intensity_head(i_x)
+        return {
+            "sentiment": self.sentiment_head(s_x),
+            "emotion": self.emotion_head(e_x),
+            "intensity": self.intensity_head(i_x)
+        }
+
 
 # -------------------------
 # Single-task model
@@ -792,129 +801,129 @@ class FocalLoss(nn.Module):
 # -------------------------
 # Training
 # -------------------------
-def train_epoch(model, loader, optim, scheduler, device, loss_fns, weights, config):
-    #przy multi-task learning
-    model.train()
-    running_loss = 0.0
-    all_sent_preds, all_sent_labels = [], []
-    all_emotion_preds, all_emotion_labels = [], []
-    all_int_preds, all_int_labels = [], []
-
-    accumulation_steps = config.get('gradient_accumulation_steps', 1)
-    running_batch = 0
-
-    for batch in tqdm(loader, desc="Train", leave=False):
-        input_ids = batch['input_ids'].to(device)
-        attention_mask = batch['attention_mask'].to(device)
-        sentiments = batch['sentiment'].to(device)
-        emotions = batch['emotions'].to(device)
-        intensities = batch['intensities'].to(device)
-
-        s_logits, e_logits, i_logits = model(input_ids, attention_mask)
-        #outputs = model(input_ids, attention_mask)
-
-        sentiment_loss = loss_fns['sentiment'](s_logits, sentiments)
-        emotion_loss = loss_fns['emotion'](e_logits, emotions)
-
-        B = i_logits.size(0)
-        num_emotions = intensities.size(1)
-        i_logits_resh = i_logits.view(B, num_emotions, 3)
-
-        intensity_loss = 0.0
-        for j in range(num_emotions):
-            intensity_loss += loss_fns['intensity'](i_logits_resh[:, j, :], intensities[:, j])
-        intensity_loss = intensity_loss / float(num_emotions)
-
-        loss = (weights['w_sentiment'] * sentiment_loss +
-                weights['w_emotion'] * emotion_loss +
-                weights['w_intensity'] * intensity_loss)
-
-        # jeśli model ma get_soft_sharing_loss method => add it
-        if hasattr(model, "get_soft_sharing_loss"):
-            loss = loss + model.get_soft_sharing_loss(l2_lambda=config.get("soft_sharing_lambda", 1e-4))
-
-        # Gradient accumulation
-        loss = loss / accumulation_steps
-        loss.backward()
-
-
-        running_batch += 1
-        if running_batch % accumulation_steps == 0:
-            torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
-            optim.step()
-            scheduler.step()
-            optim.zero_grad()
-
-        running_loss += loss.item() * accumulation_steps
-
-        with torch.no_grad():
-            sent_preds = torch.argmax(s_logits, dim=1).cpu().numpy()
-            all_sent_preds.extend(sent_preds.tolist())
-            all_sent_labels.extend(sentiments.cpu().numpy().tolist())
-
-            #em_preds = (torch.sigmoid(e_logits) >= 0.5).long().cpu().numpy()
-            # if e_logits.shape[1] > 1 and emotions.ndim == 2 and emotions.sum(dim=1).max() > 1:
-            #     # Multi-label case
-            #     em_preds = (torch.sigmoid(e_logits) >= 0.5).long().cpu().numpy()
-            # else:
-            #     # Single-emotion case
-            #     em_preds = torch.argmax(e_logits, dim=1).cpu().numpy().reshape(-1, 1)
-
-            # Zawsze trzymaj wymiary takie same jak emotions
-            if emotions.shape[1] > 1:
-                # Multi-label or one-hot encoded emotion matrix (B, num_emotions)
-                # em_preds = (torch.sigmoid(e_logits) >= 0.5).long().cpu().numpy()
-
-                # jeśli żadna emocja nie przekroczy progu → wybierz NAJBARDZIEJ prawdopodobną
-                probs = torch.sigmoid(e_logits)
-                em_preds = (probs >= 0.4).long()
-                for i in range(len(em_preds)):
-                    if em_preds[i].sum() == 0:
-                        em_preds[i, torch.argmax(probs[i])] = 1
-
-            else:
-                    # Truly single column (B,)
-                    em_preds = torch.argmax(e_logits, dim=1).cpu().numpy().reshape(-1, 1)
-
-
-            all_emotion_preds.extend(em_preds.tolist())
-            all_emotion_labels.extend(emotions.long().cpu().numpy().tolist())
-
-            int_preds = torch.argmax(i_logits_resh, dim=2).cpu().numpy()
-            all_int_preds.extend(int_preds.tolist())
-            all_int_labels.extend(intensities.cpu().numpy().tolist())
-
-        # --- Sanity check: ensure matching lengths before computing metrics ---
-    for name, preds, labels in [
-        ("sentiment", all_sent_preds, all_sent_labels),
-        ("emotion", all_emotion_preds, all_emotion_labels),
-        ("intensity", all_int_preds, all_int_labels)]:
-        if len(preds) != len(labels):
-            print(f"[Warning] {name} preds ({len(preds)}) != labels ({len(labels)}); trimming to shortest.")
-            min_len = min(len(preds), len(labels))
-            preds[:] = preds[:min_len]
-            labels[:] = labels[:min_len]
-
-    avg_loss = running_loss / len(loader)
-
-    sent_acc = accuracy_score(all_sent_labels, all_sent_preds)
-    sent_f1 = f1_score(all_sent_labels, all_sent_preds, average='macro', zero_division=0)
-
-    em_pred_flat = np.array(all_emotion_preds).reshape(-1)
-    em_label_flat = np.array(all_emotion_labels).reshape(-1)
-    em_f1_micro = f1_score(em_label_flat, em_pred_flat, average='micro', zero_division=0)
-
-    int_preds_arr = np.array(all_int_preds)
-    int_labels_arr = np.array(all_int_labels)
-    int_acc = (int_preds_arr == int_labels_arr).mean()
-
-    return {
-        "loss": avg_loss,
-        "sent_acc": sent_acc,
-        "sent_f1": sent_f1,
-        "em_f1_micro": em_f1_micro,
-        "int_acc": float(int_acc)
-    }
+# def train_epoch(model, loader, optim, scheduler, device, loss_fns, weights, config):
+#     #przy multi-task learning
+#     model.train()
+#     running_loss = 0.0
+#     all_sent_preds, all_sent_labels = [], []
+#     all_emotion_preds, all_emotion_labels = [], []
+#     all_int_preds, all_int_labels = [], []
+#
+#     accumulation_steps = config.get('gradient_accumulation_steps', 1)
+#     running_batch = 0
+#
+#     for batch in tqdm(loader, desc="Train", leave=False):
+#         input_ids = batch['input_ids'].to(device)
+#         attention_mask = batch['attention_mask'].to(device)
+#         sentiments = batch['sentiment'].to(device)
+#         emotions = batch['emotions'].to(device)
+#         intensities = batch['intensities'].to(device)
+#
+#         s_logits, e_logits, i_logits = model(input_ids, attention_mask)
+#         #outputs = model(input_ids, attention_mask)
+#
+#         sentiment_loss = loss_fns['sentiment'](s_logits, sentiments)
+#         emotion_loss = loss_fns['emotion'](e_logits, emotions)
+#
+#         B = i_logits.size(0)
+#         num_emotions = intensities.size(1)
+#         i_logits_resh = i_logits.view(B, num_emotions, 3)
+#
+#         intensity_loss = 0.0
+#         for j in range(num_emotions):
+#             intensity_loss += loss_fns['intensity'](i_logits_resh[:, j, :], intensities[:, j])
+#         intensity_loss = intensity_loss / float(num_emotions)
+#
+#         loss = (weights['w_sentiment'] * sentiment_loss +
+#                 weights['w_emotion'] * emotion_loss +
+#                 weights['w_intensity'] * intensity_loss)
+#
+#         # jeśli model ma get_soft_sharing_loss method => add it
+#         if hasattr(model, "get_soft_sharing_loss"):
+#             loss = loss + model.get_soft_sharing_loss(l2_lambda=config.get("soft_sharing_lambda", 1e-4))
+#
+#         # Gradient accumulation
+#         loss = loss / accumulation_steps
+#         loss.backward()
+#
+#
+#         running_batch += 1
+#         if running_batch % accumulation_steps == 0:
+#             torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+#             optim.step()
+#             scheduler.step()
+#             optim.zero_grad()
+#
+#         running_loss += loss.item() * accumulation_steps
+#
+#         with torch.no_grad():
+#             sent_preds = torch.argmax(s_logits, dim=1).cpu().numpy()
+#             all_sent_preds.extend(sent_preds.tolist())
+#             all_sent_labels.extend(sentiments.cpu().numpy().tolist())
+#
+#             #em_preds = (torch.sigmoid(e_logits) >= 0.5).long().cpu().numpy()
+#             # if e_logits.shape[1] > 1 and emotions.ndim == 2 and emotions.sum(dim=1).max() > 1:
+#             #     # Multi-label case
+#             #     em_preds = (torch.sigmoid(e_logits) >= 0.5).long().cpu().numpy()
+#             # else:
+#             #     # Single-emotion case
+#             #     em_preds = torch.argmax(e_logits, dim=1).cpu().numpy().reshape(-1, 1)
+#
+#             # Zawsze trzymaj wymiary takie same jak emotions
+#             if emotions.shape[1] > 1:
+#                 # Multi-label or one-hot encoded emotion matrix (B, num_emotions)
+#                 # em_preds = (torch.sigmoid(e_logits) >= 0.5).long().cpu().numpy()
+#
+#                 # jeśli żadna emocja nie przekroczy progu → wybierz NAJBARDZIEJ prawdopodobną
+#                 probs = torch.sigmoid(e_logits)
+#                 em_preds = (probs >= 0.4).long()
+#                 for i in range(len(em_preds)):
+#                     if em_preds[i].sum() == 0:
+#                         em_preds[i, torch.argmax(probs[i])] = 1
+#
+#             else:
+#                     # Truly single column (B,)
+#                     em_preds = torch.argmax(e_logits, dim=1).cpu().numpy().reshape(-1, 1)
+#
+#
+#             all_emotion_preds.extend(em_preds.tolist())
+#             all_emotion_labels.extend(emotions.long().cpu().numpy().tolist())
+#
+#             int_preds = torch.argmax(i_logits_resh, dim=2).cpu().numpy()
+#             all_int_preds.extend(int_preds.tolist())
+#             all_int_labels.extend(intensities.cpu().numpy().tolist())
+#
+#         # --- Sanity check: ensure matching lengths before computing metrics ---
+#     for name, preds, labels in [
+#         ("sentiment", all_sent_preds, all_sent_labels),
+#         ("emotion", all_emotion_preds, all_emotion_labels),
+#         ("intensity", all_int_preds, all_int_labels)]:
+#         if len(preds) != len(labels):
+#             print(f"[Warning] {name} preds ({len(preds)}) != labels ({len(labels)}); trimming to shortest.")
+#             min_len = min(len(preds), len(labels))
+#             preds[:] = preds[:min_len]
+#             labels[:] = labels[:min_len]
+#
+#     avg_loss = running_loss / len(loader)
+#
+#     sent_acc = accuracy_score(all_sent_labels, all_sent_preds)
+#     sent_f1 = f1_score(all_sent_labels, all_sent_preds, average='macro', zero_division=0)
+#
+#     em_pred_flat = np.array(all_emotion_preds).reshape(-1)
+#     em_label_flat = np.array(all_emotion_labels).reshape(-1)
+#     em_f1_micro = f1_score(em_label_flat, em_pred_flat, average='micro', zero_division=0)
+#
+#     int_preds_arr = np.array(all_int_preds)
+#     int_labels_arr = np.array(all_int_labels)
+#     int_acc = (int_preds_arr == int_labels_arr).mean()
+#
+#     return {
+#         "loss": avg_loss,
+#         "sent_acc": sent_acc,
+#         "sent_f1": sent_f1,
+#         "em_f1_micro": em_f1_micro,
+#         "int_acc": float(int_acc)
+#     }
 
 def train_epoch(model, loader, optim, scheduler, device, loss_fns, weights, config):
     model.train()
@@ -1034,85 +1043,85 @@ def train_epoch(model, loader, optim, scheduler, device, loss_fns, weights, conf
 
     return metrics
 
-def eval_epoch(model, loader, device, loss_fns, weights):
-    #przy multi-task learning
-    model.eval()
-    running_loss = 0.0
-    all_sent_preds, all_sent_labels = [], []
-    all_emotion_preds, all_emotion_labels = [], []
-    all_int_preds, all_int_labels = [], []
-
-    with torch.no_grad():
-        for batch in tqdm(loader, desc="Eval", leave=False):
-            input_ids = batch['input_ids'].to(device)
-            attention_mask = batch['attention_mask'].to(device)
-            sentiments = batch['sentiment'].to(device)
-            emotions = batch['emotions'].to(device)
-            intensities = batch['intensities'].to(device)
-
-            s_logits, e_logits, i_logits = model(input_ids, attention_mask)
-
-            sentiment_loss = loss_fns['sentiment'](s_logits, sentiments)
-            emotion_loss = loss_fns['emotion'](e_logits, emotions)
-
-            B = i_logits.size(0)
-            num_emotions = intensities.size(1)
-            i_logits_resh = i_logits.view(B, num_emotions, 3)
-
-            intensity_loss = 0.0
-            for j in range(num_emotions):
-                intensity_loss += loss_fns['intensity'](i_logits_resh[:, j, :], intensities[:, j])
-            intensity_loss = intensity_loss / float(num_emotions)
-
-            loss = (weights['w_sentiment'] * sentiment_loss +
-                    weights['w_emotion'] * emotion_loss +
-                    weights['w_intensity'] * intensity_loss)
-
-            running_loss += loss.item()
-
-            sent_preds = torch.argmax(s_logits, dim=1).cpu().numpy()
-            all_sent_preds.extend(sent_preds.tolist())
-            all_sent_labels.extend(sentiments.cpu().numpy().tolist())
-
-            em_preds = (torch.sigmoid(e_logits) >= 0.5).long().cpu().numpy()
-            all_emotion_preds.extend(em_preds.tolist())
-            all_emotion_labels.extend(emotions.long().cpu().numpy().tolist())
-
-            int_preds = torch.argmax(i_logits_resh, dim=2).cpu().numpy()
-            all_int_preds.extend(int_preds.tolist())
-            all_int_labels.extend(intensities.cpu().numpy().tolist())
-
-    avg_loss = running_loss / len(loader)
-
-    sent_acc = accuracy_score(all_sent_labels, all_sent_preds)
-    sent_f1 = f1_score(all_sent_labels, all_sent_preds, average='macro', zero_division=0)
-
-    em_pred_flat = np.array(all_emotion_preds).reshape(-1)
-    em_label_flat = np.array(all_emotion_labels).reshape(-1)
-    em_f1_micro = f1_score(em_label_flat, em_pred_flat, average='micro', zero_division=0)
-
-    int_preds_arr = np.array(all_int_preds)
-    int_labels_arr = np.array(all_int_labels)
-    int_acc = (int_preds_arr == int_labels_arr).mean()
-
-    metrics = {
-        "loss": avg_loss,
-        "sent_acc": sent_acc,
-        "sent_f1": sent_f1,
-        "em_f1_micro": em_f1_micro,
-        "int_acc": float(int_acc)
-    }
-
-    raw_outputs = {
-        "sent_preds": all_sent_preds,
-        "sent_labels": all_sent_labels,
-        "em_preds": all_emotion_preds,
-        "em_labels": all_emotion_labels,
-        "int_preds": all_int_preds,
-        "int_labels": all_int_labels
-    }
-
-    return metrics, raw_outputs
+# def eval_epoch(model, loader, device, loss_fns, weights):
+#     #przy multi-task learning
+#     model.eval()
+#     running_loss = 0.0
+#     all_sent_preds, all_sent_labels = [], []
+#     all_emotion_preds, all_emotion_labels = [], []
+#     all_int_preds, all_int_labels = [], []
+#
+#     with torch.no_grad():
+#         for batch in tqdm(loader, desc="Eval", leave=False):
+#             input_ids = batch['input_ids'].to(device)
+#             attention_mask = batch['attention_mask'].to(device)
+#             sentiments = batch['sentiment'].to(device)
+#             emotions = batch['emotions'].to(device)
+#             intensities = batch['intensities'].to(device)
+#
+#             s_logits, e_logits, i_logits = model(input_ids, attention_mask)
+#
+#             sentiment_loss = loss_fns['sentiment'](s_logits, sentiments)
+#             emotion_loss = loss_fns['emotion'](e_logits, emotions)
+#
+#             B = i_logits.size(0)
+#             num_emotions = intensities.size(1)
+#             i_logits_resh = i_logits.view(B, num_emotions, 3)
+#
+#             intensity_loss = 0.0
+#             for j in range(num_emotions):
+#                 intensity_loss += loss_fns['intensity'](i_logits_resh[:, j, :], intensities[:, j])
+#             intensity_loss = intensity_loss / float(num_emotions)
+#
+#             loss = (weights['w_sentiment'] * sentiment_loss +
+#                     weights['w_emotion'] * emotion_loss +
+#                     weights['w_intensity'] * intensity_loss)
+#
+#             running_loss += loss.item()
+#
+#             sent_preds = torch.argmax(s_logits, dim=1).cpu().numpy()
+#             all_sent_preds.extend(sent_preds.tolist())
+#             all_sent_labels.extend(sentiments.cpu().numpy().tolist())
+#
+#             em_preds = (torch.sigmoid(e_logits) >= 0.5).long().cpu().numpy()
+#             all_emotion_preds.extend(em_preds.tolist())
+#             all_emotion_labels.extend(emotions.long().cpu().numpy().tolist())
+#
+#             int_preds = torch.argmax(i_logits_resh, dim=2).cpu().numpy()
+#             all_int_preds.extend(int_preds.tolist())
+#             all_int_labels.extend(intensities.cpu().numpy().tolist())
+#
+#     avg_loss = running_loss / len(loader)
+#
+#     sent_acc = accuracy_score(all_sent_labels, all_sent_preds)
+#     sent_f1 = f1_score(all_sent_labels, all_sent_preds, average='macro', zero_division=0)
+#
+#     em_pred_flat = np.array(all_emotion_preds).reshape(-1)
+#     em_label_flat = np.array(all_emotion_labels).reshape(-1)
+#     em_f1_micro = f1_score(em_label_flat, em_pred_flat, average='micro', zero_division=0)
+#
+#     int_preds_arr = np.array(all_int_preds)
+#     int_labels_arr = np.array(all_int_labels)
+#     int_acc = (int_preds_arr == int_labels_arr).mean()
+#
+#     metrics = {
+#         "loss": avg_loss,
+#         "sent_acc": sent_acc,
+#         "sent_f1": sent_f1,
+#         "em_f1_micro": em_f1_micro,
+#         "int_acc": float(int_acc)
+#     }
+#
+#     raw_outputs = {
+#         "sent_preds": all_sent_preds,
+#         "sent_labels": all_sent_labels,
+#         "em_preds": all_emotion_preds,
+#         "em_labels": all_emotion_labels,
+#         "int_preds": all_int_preds,
+#         "int_labels": all_int_labels
+#     }
+#
+#     return metrics, raw_outputs
 
 def eval_epoch(model, loader, device, loss_fns, weights):
     model.eval()
@@ -1274,7 +1283,7 @@ def run_pipeline(csv_path, config):
     elif config["model_type"] == "single_task":
         model = SingleTaskModel(
             transformer_name=config["transformer_model"],
-            task=config["task"][0],
+            task=config["tasks"][0],
             num_emotions=num_emotions,
             dropout=config["dropout"]
         )
@@ -1362,12 +1371,26 @@ def run_pipeline(csv_path, config):
 
 
 
-    loss_fns = {
-        "sentiment": nn.CrossEntropyLoss(weight=class_weights_tensor),
-        #"emotion": FocalLoss(alpha=config['focal_alpha'], gamma=config['focal_gamma']) if config['use_focal_loss'] else nn.BCEWithLogitsLoss(),
-        'emotion': FocalLoss(alpha=emotion_weights, gamma=config['focal_gamma']),
-        "intensity": nn.CrossEntropyLoss()
-    }
+    # loss_fns = {
+    #     "sentiment": nn.CrossEntropyLoss(weight=class_weights_tensor),
+    #     #"emotion": FocalLoss(alpha=config['focal_alpha'], gamma=config['focal_gamma']) if config['use_focal_loss'] else nn.BCEWithLogitsLoss(),
+    #     'emotion': FocalLoss(alpha=emotion_weights, gamma=config['focal_gamma']),
+    #     "intensity": nn.CrossEntropyLoss()
+    # }
+    tasks = config["tasks"]
+    loss_fns = {}
+
+    if "sentiment" in tasks:
+        loss_fns["sentiment"] = nn.CrossEntropyLoss(weight=class_weights_tensor)
+
+    if "emotion" in tasks:
+        loss_fns["emotion"] = FocalLoss(
+            alpha=emotion_weights,
+            gamma=config["focal_gamma"]
+        )
+
+    if "intensity" in tasks:
+        loss_fns["intensity"] = nn.CrossEntropyLoss()
 
     optimizer = torch.optim.AdamW(
         model.parameters(),
@@ -1392,11 +1415,22 @@ def run_pipeline(csv_path, config):
     print(f"   - Focal Loss: {config['use_focal_loss']}")
     print(f"   - Gradient accumulation: {config['gradient_accumulation_steps']}")
 
-    weights = {
-        "w_sentiment": config['w_sentiment'],
-        "w_emotion": config['w_emotion'],
-        "w_intensity": config['w_intensity']
-    }
+    # weights = {
+    #     "w_sentiment": config['w_sentiment'],
+    #     "w_emotion": config['w_emotion'],
+    #     "w_intensity": config['w_intensity']
+    # }
+
+    weights = {}
+
+    if "sentiment" in tasks:
+        weights["w_sentiment"] = config["w_sentiment"]
+
+    if "emotion" in tasks:
+        weights["w_emotion"] = config["w_emotion"]
+
+    if "intensity" in tasks:
+        weights["w_intensity"] = config["w_intensity"]
 
     best_val = float('inf')
     best_epoch = 0
@@ -1415,8 +1449,18 @@ def run_pipeline(csv_path, config):
         history['train'].append(train_metrics)
         history['val'].append(val_metrics)
 
-        print(f"Train | Loss: {train_metrics['loss']:.4f} | Sent F1: {train_metrics['sent_f1']:.4f} | Em F1: {train_metrics['em_f1_micro']:.4f} | Int Acc: {train_metrics['int_acc']:.4f}")
-        print(f"Val   | Loss: {val_metrics['loss']:.4f} | Sent F1: {val_metrics['sent_f1']:.4f} | Em F1: {val_metrics['em_f1_micro']:.4f} | Int Acc: {val_metrics['int_acc']:.4f}")
+        # print(f"Train | Loss: {train_metrics['loss']:.4f} | Sent F1: {train_metrics['sent_f1']:.4f} | Em F1: {train_metrics['em_f1_micro']:.4f} | Int Acc: {train_metrics['int_acc']:.4f}")
+        # print(f"Val   | Loss: {val_metrics['loss']:.4f} | Sent F1: {val_metrics['sent_f1']:.4f} | Em F1: {val_metrics['em_f1_micro']:.4f} | Int Acc: {val_metrics['int_acc']:.4f}")
+
+        def get_m(m, k):
+            return f"{m[k]:.4f}" if k in m else "-"
+
+        print(
+            f"Train | Loss {train_metrics['loss']:.4f} | "
+            f"SentF1 {get_m(train_metrics, 'sent_f1')} | "
+            f"EmF1 {get_m(train_metrics, 'em_f1_micro')} | "
+            f"IntAcc {get_m(train_metrics, 'int_acc')}"
+        )
 
         # Save best model
         if val_metrics['loss'] < best_val:
@@ -1446,120 +1490,140 @@ def run_pipeline(csv_path, config):
     os.makedirs(report_dir, exist_ok=True)
 
     # 1. Sentiment report
-    sent_labels_map = {0: "negative", 1: "neutral", 2: "positive"}
+    if "sentiment" in tasks:
+        sent_labels_map = {0: "negative", 1: "neutral", 2: "positive"}
 
-    # Dopasuj etykiety do rzeczywistych klas
-    unique_labels = sorted(set(final_raw['sent_labels']) | set(final_raw['sent_preds']))
-    target_names = [sent_labels_map[i] for i in unique_labels]
+        # Dopasuj etykiety do rzeczywistych klas
+        unique_labels = sorted(set(final_raw['sent_labels']) | set(final_raw['sent_preds']))
+        target_names = [sent_labels_map[i] for i in unique_labels]
 
-    sent_report = classification_report(
-        final_raw['sent_labels'],
-        final_raw['sent_preds'],
-        labels=unique_labels,
-        target_names=target_names,
-        digits=4,
-        zero_division=0
-    )
+        sent_report = classification_report(
+            final_raw['sent_labels'],
+            final_raw['sent_preds'],
+            labels=unique_labels,
+            target_names=target_names,
+            digits=4,
+            zero_division=0
+        )
 
-    with open(os.path.join(report_dir, "sentiment_report.txt"), "w") as f:
-        f.write("="*60 + "\n")
-        f.write("SENTIMENT CLASSIFICATION REPORT\n")
-        f.write("="*60 + "\n\n")
-        f.write(sent_report)
+        with open(os.path.join(report_dir, "sentiment_report.txt"), "w") as f:
+            f.write("="*60 + "\n")
+            f.write("SENTIMENT CLASSIFICATION REPORT\n")
+            f.write("="*60 + "\n\n")
+            f.write(sent_report)
 
-    print("\n✓ Sentiment report saved")
+        print("\n✓ Sentiment report saved")
 
 
     # 2. Emotion report
-    em_labels = np.array(final_raw['em_labels'])
-    em_preds = np.array(final_raw['em_preds'])
+    if "emotion" in tasks:
+        em_labels = np.array(final_raw['em_labels'])
+        em_preds = np.array(final_raw['em_preds'])
 
-    with open(os.path.join(report_dir, "emotion_report.txt"), "w") as f:
-        f.write("="*60 + "\n")
-        f.write("EMOTION MULTI-LABEL CLASSIFICATION REPORT\n")
-        f.write("="*60 + "\n\n")
+        with open(os.path.join(report_dir, "emotion_report.txt"), "w") as f:
+            f.write("="*60 + "\n")
+            f.write("EMOTION MULTI-LABEL CLASSIFICATION REPORT\n")
+            f.write("="*60 + "\n\n")
 
-        em_flat_labels = em_labels.reshape(-1)
-        em_flat_preds = em_preds.reshape(-1)
+            em_flat_labels = em_labels.reshape(-1)
+            em_flat_preds = em_preds.reshape(-1)
 
-        em_f1_micro = f1_score(em_flat_labels, em_flat_preds, average='micro', zero_division=0)
-        em_f1_macro = f1_score(em_flat_labels, em_flat_preds, average='macro', zero_division=0)
-        em_acc = accuracy_score(em_flat_labels, em_flat_preds)
+            em_f1_micro = f1_score(em_flat_labels, em_flat_preds, average='micro', zero_division=0)
+            em_f1_macro = f1_score(em_flat_labels, em_flat_preds, average='macro', zero_division=0)
+            em_acc = accuracy_score(em_flat_labels, em_flat_preds)
 
-        f.write(f"Overall Micro F1: {em_f1_micro:.4f}\n")
-        f.write(f"Overall Macro F1: {em_f1_macro:.4f}\n")
-        f.write(f"Overall Accuracy: {em_acc:.4f}\n\n")
-        f.write("="*60 + "\n")
-        f.write("PER-EMOTION REPORTS\n")
-        f.write("="*60 + "\n\n")
+            f.write(f"Overall Micro F1: {em_f1_micro:.4f}\n")
+            f.write(f"Overall Macro F1: {em_f1_macro:.4f}\n")
+            f.write(f"Overall Accuracy: {em_acc:.4f}\n\n")
+            f.write("="*60 + "\n")
+            f.write("PER-EMOTION REPORTS\n")
+            f.write("="*60 + "\n\n")
 
-        for i, ename in enumerate(emotion_names):
-            f.write(f"\n--- {ename.upper()} ---\n")
-            try:
-                em_report = classification_report(
-                    em_labels[:, i],
-                    em_preds[:, i],
-                    target_names=["absent", "present"],
-                    digits=4,
-                    zero_division=0
-                )
-                f.write(em_report + "\n")
-            except Exception as e:
-                f.write(f"Error generating report: {e}\n")
+            for i, ename in enumerate(emotion_names):
+                f.write(f"\n--- {ename.upper()} ---\n")
+                try:
+                    em_report = classification_report(
+                        em_labels[:, i],
+                        em_preds[:, i],
+                        target_names=["absent", "present"],
+                        digits=4,
+                        zero_division=0
+                    )
+                    f.write(em_report + "\n")
+                except Exception as e:
+                    f.write(f"Error generating report: {e}\n")
 
-    print("✓ Emotion report saved")
+        print("✓ Emotion report saved")
 
-    # 3. Intensity report
-    int_labels = np.array(final_raw['int_labels'])
-    int_preds = np.array(final_raw['int_preds'])
+    # 3. Intensity
+    if "intensity" in tasks:
+        int_labels = np.array(final_raw['int_labels'])
+        int_preds = np.array(final_raw['int_preds'])
 
-    with open(os.path.join(report_dir, "intensity_report.txt"), "w") as f:
-        f.write("="*60 + "\n")
-        f.write("INTENSITY CLASSIFICATION REPORT\n")
-        f.write("="*60 + "\n\n")
+        with open(os.path.join(report_dir, "intensity_report.txt"), "w") as f:
+            f.write("="*60 + "\n")
+            f.write("INTENSITY CLASSIFICATION REPORT\n")
+            f.write("="*60 + "\n\n")
 
-        overall_int_acc = (int_labels == int_preds).mean()
-        f.write(f"Overall Intensity Accuracy: {overall_int_acc:.4f}\n\n")
+            overall_int_acc = (int_labels == int_preds).mean()
+            f.write(f"Overall Intensity Accuracy: {overall_int_acc:.4f}\n\n")
 
-        f.write("="*60 + "\n")
-        f.write("PER-EMOTION INTENSITY REPORTS\n")
-        f.write("="*60 + "\n\n")
+            f.write("="*60 + "\n")
+            f.write("PER-EMOTION INTENSITY REPORTS\n")
+            f.write("="*60 + "\n\n")
 
-        for i, ename in enumerate(emotion_names):
-            f.write(f"\n--- {ename.upper()} ---\n")
+            for i, ename in enumerate(emotion_names):
+                f.write(f"\n--- {ename.upper()} ---\n")
 
-            labels_i = int_labels[:, i]
-            preds_i = int_preds[:, i]
+                labels_i = int_labels[:, i]
+                preds_i = int_preds[:, i]
 
-            acc_i = (labels_i == preds_i).mean()
-            f.write(f"Accuracy: {acc_i:.4f}\n\n")
+                acc_i = (labels_i == preds_i).mean()
+                f.write(f"Accuracy: {acc_i:.4f}\n\n")
 
-            try:
-                int_report = classification_report(
-                    labels_i,
-                    preds_i,
-                    target_names=["low (1)", "medium (2)", "high (3)"],
-                    digits=4,
-                    zero_division=0
-                )
-                f.write(int_report + "\n")
-            except Exception as e:
-                f.write(f"Error: {e}\n")
+                try:
+                    int_report = classification_report(
+                        labels_i,
+                        preds_i,
+                        target_names=["low (1)", "medium (2)", "high (3)"],
+                        digits=4,
+                        zero_division=0
+                    )
+                    f.write(int_report + "\n")
+                except Exception as e:
+                    f.write(f"Error: {e}\n")
 
-    print("✓ Intensity report saved")
+        print("✓ Intensity report saved")
 
     # 4. Save predictions CSV
-    df_predictions = pd.DataFrame({
-        "text": X_val,
-        "sentiment_label": [sent_labels_map[l] for l in final_raw['sent_labels']],
-        "sentiment_pred": [sent_labels_map[p] for p in final_raw['sent_preds']]
-    })
+    # df_predictions = pd.DataFrame({
+    #     "text": X_val,
+    #     "sentiment_label": [sent_labels_map[l] for l in final_raw['sent_labels']],
+    #     "sentiment_pred": [sent_labels_map[p] for p in final_raw['sent_preds']]
+    # })
+    #
+    # for j, ename in enumerate(emotion_names):
+    #     df_predictions[f"emotion__{ename}_label"] = [row[j] for row in final_raw['em_labels']]
+    #     df_predictions[f"emotion__{ename}_pred"] = [row[j] for row in final_raw['em_preds']]
+    #     df_predictions[f"intensity__{ename}_label"] = [row[j] + 1 for row in final_raw['int_labels']]
+    #     df_predictions[f"intensity__{ename}_pred"] = [row[j] + 1 for row in final_raw['int_preds']]
 
-    for j, ename in enumerate(emotion_names):
-        df_predictions[f"emotion__{ename}_label"] = [row[j] for row in final_raw['em_labels']]
-        df_predictions[f"emotion__{ename}_pred"] = [row[j] for row in final_raw['em_preds']]
-        df_predictions[f"intensity__{ename}_label"] = [row[j] + 1 for row in final_raw['int_labels']]
-        df_predictions[f"intensity__{ename}_pred"] = [row[j] + 1 for row in final_raw['int_preds']]
+    df_predictions = pd.DataFrame({"text": X_val})
+
+    if "sentiment" in tasks:
+        sent_labels_map = {0: "negative", 1: "neutral", 2: "positive"}
+        df_predictions["sentiment_label"] = [sent_labels_map[l] for l in final_raw["sent_labels"]]
+        df_predictions["sentiment_pred"] = [sent_labels_map[p] for p in final_raw["sent_preds"]]
+
+    if "emotion" in tasks:
+        for j, ename in enumerate(emotion_names):
+            df_predictions[f"emotion__{ename}_label"] = [row[j] for row in final_raw["em_labels"]]
+            df_predictions[f"emotion__{ename}_pred"] = [row[j] for row in final_raw["em_preds"]]
+
+    if "intensity" in tasks:
+        for j, ename in enumerate(emotion_names):
+            df_predictions[f"intensity__{ename}_label"] = [row[j] + 1 for row in final_raw["int_labels"]]
+            df_predictions[f"intensity__{ename}_pred"] = [row[j] + 1 for row in final_raw["int_preds"]]
 
     pred_path = os.path.join(report_dir, "predictions.csv")
     df_predictions.to_csv(pred_path, index=False, encoding='utf-8')
@@ -1679,7 +1743,7 @@ if __name__ == "__main__":
     config.update({
         "model_type": "single_task", # architektura
         "transformer_model": "bert-base-uncased", # model jezykowy
-        "task": ["sentiment"], #"emotion", "intensity" lub oba na raz do 2-task
+        "tasks": ["sentiment"], #"emotion", "intensity" lub oba na raz do 2-task
         "output_dir": "./outputs_multitask",
         "epochs": 6, #5,
         "batch_size": 16, #16,
