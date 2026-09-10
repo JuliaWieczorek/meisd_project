@@ -108,7 +108,7 @@ class EnhancedESConvProcessor:
         def map_to_binary_intensity(intensity):
             if pd.isna(intensity):
                 return None  # Skip NaN values
-            if intensity <= 3:
+            if intensity <= 2:
                 return 'low'  # 1-2 -> low intensity
             else:
                 return 'high'  # 3-5 -> high intensity
@@ -216,7 +216,7 @@ class EnhancedESConvProcessor:
 
         # Map to binary intensity (keeping original for reference)
         classification_data['intensity'] = classification_data['original_intensity'].apply(
-            lambda x: 'low' if pd.notna(x) and x <= 3 else ('high' if pd.notna(x) else None)
+            lambda x: 'low' if pd.notna(x) and x <= 2 else ('high' if pd.notna(x) else None)
         )
 
         # Create binary labels
@@ -631,7 +631,11 @@ class EnhancedMEISDDataAugmenter:
         class_counts = esconv_data['label'].value_counts()
         print(f"Original ESConv class distribution: {class_counts.to_dict()}")
 
-        augmented_samples = {'Utterances': [], 'intensity': [], 'label': []}
+        augmented_samples = {
+            'Utterances': [], 'intensity': [], 'label': [],
+            'source_text': [], 'source_index': [], 'augmentation_method': [],
+            'augmentation_stage': [], 'quality_score': [], 'is_augmented': []
+        }
 
         for label in class_counts.index:
             num_to_add = int(class_counts[label] * (augment_percent / 100))
@@ -656,18 +660,24 @@ class EnhancedMEISDDataAugmenter:
                 # Apply transformation based on mode
                 if mode == 'enhanced_llm':
                     transformed_text = self._enhanced_llm_transformation(original_text, target_intensity)
+                    applied_method = 'llm'
                 elif mode == 'enhanced_classical':
                     transformed_text = self._enhanced_classical_transformation(original_text, target_intensity)
+                    applied_method = 'rule'
                 elif mode == 'enhanced_nlp':
                     transformed_text = self._enhanced_nlp_transformation(original_text, target_intensity)
+                    applied_method = 'nlp'
                 elif mode == 'enhanced_llm_nlp':
                     transformed_text = self._enhanced_llm_nlp_transformation(original_text, target_intensity)
+                    applied_method = 'nlp_llm'
                 elif mode == 'enhanced_mixed':
                     # 70% enhanced LLM, 30% enhanced classical
                     if random.random() < 0.7:
                         transformed_text = self._enhanced_llm_transformation(original_text, target_intensity)
+                        applied_method = 'llm'
                     else:
                         transformed_text = self._enhanced_classical_transformation(original_text, target_intensity)
+                        applied_method = 'rule'
                 else:
                     raise ValueError(f"Unknown mode: {mode}")
 
@@ -678,6 +688,12 @@ class EnhancedMEISDDataAugmenter:
                 augmented_samples['Utterances'].append(transformed_text)
                 augmented_samples['intensity'].append(target_intensity)
                 augmented_samples['label'].append(label)
+                augmented_samples['source_text'].append(original_text)
+                augmented_samples['source_index'].append(sample.name)
+                augmented_samples['augmentation_method'].append(applied_method)
+                augmented_samples['augmentation_stage'].append('proportional')
+                augmented_samples['quality_score'].append(quality)
+                augmented_samples['is_augmented'].append(True)
 
             print(f"Average transformation quality for label {label}: {np.mean(quality_scores):.3f}")
 
@@ -685,7 +701,12 @@ class EnhancedMEISDDataAugmenter:
         augmented_df = pd.DataFrame(augmented_samples)
 
         # Combine with original ESConv data
-        final_df = pd.concat([esconv_data, augmented_df], ignore_index=True).sample(frac=1).reset_index(drop=True)
+        base_data = esconv_data.copy()
+        if 'is_augmented' not in base_data.columns:
+            base_data['is_augmented'] = False
+        else:
+            base_data['is_augmented'] = base_data['is_augmented'].fillna(False).astype(bool)
+        final_df = pd.concat([base_data, augmented_df], ignore_index=True).sample(frac=1).reset_index(drop=True)
 
         final_counts = final_df['label'].value_counts()
         print(f"Final class distribution: {final_counts.to_dict()}")
@@ -720,7 +741,11 @@ class EnhancedMEISDDataAugmenter:
 
         print(f"Target size per class: {target_size_per_class}")
 
-        augmented_samples = {'Utterances': [], 'intensity': [], 'label': []}
+        augmented_samples = {
+            'Utterances': [], 'intensity': [], 'label': [],
+            'source_text': [], 'source_index': [], 'augmentation_method': [],
+            'augmentation_stage': [], 'quality_score': [], 'is_augmented': []
+        }
 
         for label in class_counts.index:
             current_count = class_counts[label]
@@ -750,18 +775,24 @@ class EnhancedMEISDDataAugmenter:
                 # Apply transformation based on mode
                 if mode == 'enhanced_llm':
                     transformed_text = self._enhanced_llm_transformation(original_text, target_intensity)
+                    applied_method = 'llm'
                 elif mode == 'enhanced_classical':
                     transformed_text = self._enhanced_classical_transformation(original_text, target_intensity)
+                    applied_method = 'rule'
                 elif mode == 'enhanced_nlp':
                     transformed_text = self._enhanced_nlp_transformation(original_text, target_intensity)
+                    applied_method = 'nlp'
                 elif mode == 'enhanced_llm_nlp':
                     transformed_text = self._enhanced_llm_nlp_transformation(original_text, target_intensity)
+                    applied_method = 'nlp_llm'
                 elif mode == 'enhanced_mixed':
                     # 70% enhanced LLM, 30% enhanced classical
                     if random.random() < 0.7:
                         transformed_text = self._enhanced_llm_transformation(original_text, target_intensity)
+                        applied_method = 'llm'
                     else:
                         transformed_text = self._enhanced_classical_transformation(original_text, target_intensity)
+                        applied_method = 'rule'
                 else:
                     raise ValueError(f"Unknown mode: {mode}")
 
@@ -772,6 +803,12 @@ class EnhancedMEISDDataAugmenter:
                 augmented_samples['Utterances'].append(transformed_text)
                 augmented_samples['intensity'].append(target_intensity)
                 augmented_samples['label'].append(label)
+                augmented_samples['source_text'].append(original_text)
+                augmented_samples['source_index'].append(sample.name)
+                augmented_samples['augmentation_method'].append(applied_method)
+                augmented_samples['augmentation_stage'].append('balancing')
+                augmented_samples['quality_score'].append(quality)
+                augmented_samples['is_augmented'].append(True)
 
             if quality_scores:
                 print(f"Average transformation quality for label {label}: {np.mean(quality_scores):.3f}")
@@ -780,7 +817,12 @@ class EnhancedMEISDDataAugmenter:
         augmented_df = pd.DataFrame(augmented_samples)
 
         # Combine with original ESConv data
-        final_df = pd.concat([esconv_data, augmented_df], ignore_index=True)
+        base_data = esconv_data.copy()
+        if 'is_augmented' not in base_data.columns:
+            base_data['is_augmented'] = False
+        else:
+            base_data['is_augmented'] = base_data['is_augmented'].fillna(False).astype(bool)
+        final_df = pd.concat([base_data, augmented_df], ignore_index=True)
 
 
         final_counts = final_df['label'].value_counts()

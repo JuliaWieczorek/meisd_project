@@ -24,8 +24,25 @@ Relevant scripts:
 official/DA_and_transfer_learning/generate_basic_domain_statistics.py
 official/DA_and_transfer_learning/data_augmentation.py
 official/DA_and_transfer_learning/TextAugmentationEvaluator.py
+official/DA_and_transfer_learning/recompute_intrinsic_metrics.py
 official/DA_and_transfer_learning/binary_intensity_classification_LLM.py
 ```
+
+For new intrinsic-evaluation runs, use
+`recompute_intrinsic_metrics.py`. It requires every transformed record to retain
+its `source_text` before it will calculate paired BLEU or CHRF, uses a causal
+language model for perplexity, and writes unavailable metrics as null values
+with an explanation instead of substituting the transformed text as its own
+reference or returning a numerical zero. The output directory contains:
+
+```text
+intrinsic_metrics_summary.csv
+intrinsic_metrics_manifest.json
+intrinsic_metrics_report.md
+```
+
+The manifest records input hashes, evaluated sample counts, selection rules,
+metric settings, reference availability, and the perplexity model status.
 
 ## Portability warning
 
@@ -55,4 +72,3 @@ The manuscript reports multiple augmentation families and a sequential
 MEISD-to-ESConv training design. A reproduction is complete only when the data
 counts, class distributions, augmentation-quality tables, classification
 metrics, and statistical comparisons agree within a documented tolerance.
-

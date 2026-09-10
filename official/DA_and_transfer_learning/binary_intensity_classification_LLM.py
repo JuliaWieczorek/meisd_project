@@ -244,9 +244,9 @@ def load_data(file_path, dataset_type="ESConv"):
         print(f"Original labels: {sorted(unique_labels)}")
 
         if dataset_type == "ESConv":
-            # ESConv (1-5) → Binary: 1-3 = 0 (low), 4-5 = 1 (high)
-            df['label'] = df['label'].apply(lambda x: 0 if x <= 3 else 1)
-            print(f"ESConv binary mapping applied: 1-3 → 0 (low), 4-5 → 1 (high)")
+            # ESConv (1-5) → Binary: 1-2 = 0 (low), 3-5 = 1 (high)
+            df['label'] = df['label'].apply(lambda x: 0 if x <= 2 else 1)
+            print(f"ESConv binary mapping applied: 1-2 → 0 (low), 3-5 → 1 (high)")
         elif dataset_type == "MEISD":
             # MEISD (1-3) → Binary: ≤1.5 = 0 (low), >1.5 = 1 (high)
             df['label'] = df['label'].apply(lambda x: 0 if x <= 1.5 else 1)
