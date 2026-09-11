@@ -44,6 +44,18 @@ class MetricTests(unittest.TestCase):
         self.assertEqual(pairs, [("source text", "transformed text")])
         self.assertEqual(column, "source_text")
 
+    def test_target_rows_are_removed_by_multiplicity(self):
+        frame = pd.DataFrame(
+            {"conversation": ["target text", "new text", "target text"]}
+        )
+        transformed, rule = metrics.select_transformed_rows(
+            frame,
+            "conversation",
+            metrics.Counter({"target text": 1}),
+        )
+        self.assertEqual(transformed["conversation"].tolist(), ["new text", "target text"])
+        self.assertIn("multiset", rule)
+
     def test_cli_writes_null_for_unavailable_pairwise_metrics(self):
         with tempfile.TemporaryDirectory() as raw_directory:
             directory = Path(raw_directory)

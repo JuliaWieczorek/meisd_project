@@ -32,6 +32,7 @@ import re
 from collections import Counter
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from functools import lru_cache
 from pathlib import Path
 from typing import Any, Iterable, Sequence
 
@@ -120,7 +121,7 @@ def truthy_mask(series: pd.Series) -> pd.Series:
 def select_transformed_rows(
     frame: pd.DataFrame,
     text_column: str,
-    target_texts: set[str],
+    target_text_counts: Counter[str],
 ) -> tuple[pd.DataFrame, str]:
     lower_to_original = {str(column).lower(): str(column) for column in frame.columns}
     if "is_augmented" in lower_to_original:
@@ -133,9 +134,19 @@ def select_transformed_rows(
             mask = frame[column].map(normalise_text).ne("")
             return frame.loc[mask].copy(), f"non-empty {column} provenance"
 
-    normalised = frame[text_column].map(normalise_text).str.lower()
-    mask = ~normalised.isin(target_texts)
-    return frame.loc[mask].copy(), "exact-string exclusion against target corpus"
+    remaining_target_counts = target_text_counts.copy()
+    transformed_mask: list[bool] = []
+    for value in frame[text_column]:
+        text = normalise_text(value).lower()
+        if text and remaining_target_counts[text] > 0:
+            remaining_target_counts[text] -= 1
+            transformed_mask.append(False)
+        else:
+            transformed_mask.append(True)
+    return (
+        frame.loc[pd.Series(transformed_mask, index=frame.index)].copy(),
+        "multiset subtraction of authentic target-corpus instances",
+    )
 
 
 def corpus_diversity(texts: Sequence[str]) -> dict[str, float | int | None]:
@@ -291,6 +302,24 @@ def mean_jaccard_novelty(texts: Sequence[str], source_texts: Sequence[str]) -> f
     return float(np.mean(scores))
 
 
+@lru_cache(maxsize=None)
+def load_causal_lm(model_name: str, device_name: str):
+    """Load a causal language model once and reuse it across augmentation methods."""
+    import torch
+    from transformers import AutoModelForCausalLM, AutoTokenizer
+
+    device = torch.device(
+        "cuda" if device_name == "auto" and torch.cuda.is_available() else
+        "cpu" if device_name == "auto" else device_name
+    )
+    tokenizer = AutoTokenizer.from_pretrained(model_name)
+    model = AutoModelForCausalLM.from_pretrained(model_name).to(device)
+    if tokenizer.pad_token_id is None:
+        tokenizer.pad_token = tokenizer.eos_token
+    model.eval()
+    return torch, tokenizer, model, device
+
+
 def causal_lm_perplexity(
     texts: Sequence[str],
     model_name: str,
@@ -299,24 +328,11 @@ def causal_lm_perplexity(
     device_name: str,
 ) -> tuple[float | None, dict[str, Any]]:
     try:
-        import torch
-        from transformers import AutoModelForCausalLM, AutoTokenizer
+        torch, tokenizer, model, device = load_causal_lm(model_name, device_name)
     except ImportError as exc:
         return None, {"status": "unavailable", "reason": f"missing dependency: {exc.name}"}
-
-    device = torch.device(
-        "cuda" if device_name == "auto" and torch.cuda.is_available() else
-        "cpu" if device_name == "auto" else device_name
-    )
-    try:
-        tokenizer = AutoTokenizer.from_pretrained(model_name)
-        model = AutoModelForCausalLM.from_pretrained(model_name).to(device)
     except Exception as exc:  # model cache/network errors must be recorded, not converted to 0
         return None, {"status": "unavailable", "reason": f"model initialisation failed: {exc}"}
-
-    if tokenizer.pad_token_id is None:
-        tokenizer.pad_token = tokenizer.eos_token
-    model.eval()
     total_negative_log_likelihood = 0.0
     total_predicted_tokens = 0
     with torch.no_grad():
@@ -385,7 +401,8 @@ def write_outputs(output_dir: Path, rows: list[dict[str, Any]], manifest: dict[s
     )
 
     columns = [
-        "method", "total_instances", "transformed_instances", "uniqueness_ratio",
+        "method", "total_instances", "transformed_instances", "full_set_uniqueness_ratio",
+        "transformed_uniqueness_ratio",
         "self_bleu", "ttr", "utr", "novelty", "bleu", "chrf", "perplexity",
     ]
     lines = [
@@ -433,7 +450,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     target_frame = read_table(target_path)
     target_column = resolve_column(target_frame, args.target_text_column, TEXT_COLUMN_CANDIDATES)
     target_texts_list = [normalise_text(value) for value in target_frame[target_column]]
-    target_texts = {text.lower() for text in target_texts_list if text}
+    target_text_counts = Counter(text.lower() for text in target_texts_list if text)
 
     source_texts_list: list[str] = []
     source_metadata: dict[str, Any] | None = None
@@ -454,12 +471,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     rows: list[dict[str, Any]] = []
     dataset_manifest: dict[str, Any] = {}
     for spec in args.dataset:
+        print(f"Evaluating {spec.method}...")
         if not spec.path.exists():
             raise FileNotFoundError(f"Augmented dataset not found: {spec.path}")
         frame = read_table(spec.path)
         text_column = resolve_column(frame, args.text_column, TEXT_COLUMN_CANDIDATES)
         all_texts = [normalise_text(value) for value in frame[text_column] if normalise_text(value)]
-        transformed, selection_rule = select_transformed_rows(frame, text_column, target_texts)
+        transformed, selection_rule = select_transformed_rows(frame, text_column, target_text_counts)
         transformed_texts = [normalise_text(value) for value in transformed[text_column] if normalise_text(value)]
         pairs, source_column = source_pairs(transformed, text_column)
 
@@ -487,7 +505,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             "total_instances": len(frame),
             "transformed_instances": len(transformed_texts),
             "paired_instances": len(pairs),
-            "uniqueness_ratio": len(set(all_texts)) / len(all_texts) if all_texts else None,
+            "full_set_uniqueness_ratio": len(set(all_texts)) / len(all_texts) if all_texts else None,
+            "transformed_uniqueness_ratio": (
+                len(set(transformed_texts)) / len(transformed_texts) if transformed_texts else None
+            ),
             "self_bleu": self_bleu(transformed_texts),
             "ttr": diversity["ttr"],
             "utr": diversity["utr"],
@@ -507,6 +528,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             "pairwise_metrics": pair_status,
             "perplexity": perplexity_status,
         }
+        print(f"Completed {spec.method} ({len(transformed_texts)} transformed instances).")
 
     manifest = {
         "generated_at_utc": datetime.now(timezone.utc).isoformat(),

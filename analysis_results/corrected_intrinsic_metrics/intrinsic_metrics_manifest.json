@@ -1,0 +1,149 @@
+{
+  "generated_at_utc": "2026-09-10T23:30:48.061364+00:00",
+  "script": "D:\\PycharmProjects\\phd_research_code\\meisd_project\\official\\DA_and_transfer_learning\\recompute_intrinsic_metrics.py",
+  "configuration": {
+    "seed": 42,
+    "tokenisation": "[A-Za-z]+(?:'[A-Za-z]+)?|\\d+(?:\\.\\d+)?",
+    "self_bleu": {
+      "orders": 4,
+      "smoothing_epsilon": 0.1,
+      "references": "all other transformed samples"
+    },
+    "bleu": {
+      "orders": 4,
+      "smoothing_epsilon": 0.1,
+      "requires_retained_source_text": true
+    },
+    "chrf": {
+      "character_orders": 6,
+      "beta": 2.0,
+      "whitespace": false,
+      "requires_retained_source_text": true
+    },
+    "novelty": "mean one-minus-maximum token-set Jaccard similarity to any source-corpus sample"
+  },
+  "target_corpus": {
+    "path": "D:\\PycharmProjects\\phd_research_code\\meisd_project\\data\\data_preparation\\data_preparation\\esconv_original_with_existing_labels.xlsx",
+    "sha256": "72292ee070d146d6fcb0932cd12c3657a3f5dd0b0f1802f7e4c2be4353653d9d",
+    "text_column": "Utterances",
+    "instances": 2450
+  },
+  "source_corpus": {
+    "path": "D:\\PycharmProjects\\phd_research_code\\meisd_project\\data\\data_preparation\\data_preparation\\filtered_negative_MEISD_intensity_max_first_25_conv.csv",
+    "sha256": "7896d2858f94a3603155b3ad37ea7c4b16539b19508eeaccc6162252d5a9358a",
+    "text_column": "conversation",
+    "instances": 1085
+  },
+  "datasets": {
+    "rule": {
+      "path": "D:\\PycharmProjects\\phd_research_code\\meisd_project\\data\\data_preparation\\data_preparation\\balanced datasets\\esconv_enhanced_classical_augmentation_70percent_balanced.xlsx",
+      "sha256": "366ffc5c423f20195bfab78e6057e60b3c30b58bfbb00fe7dd2aedc6679e28a4",
+      "text_column": "conversation",
+      "selection_rule": "multiset subtraction of authentic target-corpus instances",
+      "total_instances": 4738,
+      "transformed_instances": 2288,
+      "pairwise_metrics": {
+        "status": "unavailable",
+        "paired_instances": 0,
+        "source_column": null,
+        "reason": "no retained source_text column; references were not substituted"
+      },
+      "perplexity": {
+        "status": "computed",
+        "model": "gpt2",
+        "device": "cpu",
+        "predicted_tokens": 53336,
+        "max_length": 512,
+        "batch_size": 8
+      }
+    },
+    "rule_llm": {
+      "path": "D:\\PycharmProjects\\phd_research_code\\meisd_project\\data\\data_preparation\\data_preparation\\balanced datasets\\esconv_enhanced_mixed_augmentation_70percent_balanced.xlsx",
+      "sha256": "08a9c4fce79b02fe2918d47ebb8a9b93aa9ff38411a5c462fa6e2a1a2a326c92",
+      "text_column": "conversation",
+      "selection_rule": "multiset subtraction of authentic target-corpus instances",
+      "total_instances": 4738,
+      "transformed_instances": 2288,
+      "pairwise_metrics": {
+        "status": "unavailable",
+        "paired_instances": 0,
+        "source_column": null,
+        "reason": "no retained source_text column; references were not substituted"
+      },
+      "perplexity": {
+        "status": "computed",
+        "model": "gpt2",
+        "device": "cpu",
+        "predicted_tokens": 137546,
+        "max_length": 512,
+        "batch_size": 8
+      }
+    },
+    "llm": {
+      "path": "D:\\PycharmProjects\\phd_research_code\\meisd_project\\data\\data_preparation\\data_preparation\\balanced datasets\\esconv_enhanced_llm_augmentation_70percent_balanced.xlsx",
+      "sha256": "2d82589a54a9cee3efbd070bfb40f161077a6e92e01aa321f4160b2e15a96aad",
+      "text_column": "conversation",
+      "selection_rule": "multiset subtraction of authentic target-corpus instances",
+      "total_instances": 4738,
+      "transformed_instances": 2288,
+      "pairwise_metrics": {
+        "status": "unavailable",
+        "paired_instances": 0,
+        "source_column": null,
+        "reason": "no retained source_text column; references were not substituted"
+      },
+      "perplexity": {
+        "status": "computed",
+        "model": "gpt2",
+        "device": "cpu",
+        "predicted_tokens": 176215,
+        "max_length": 512,
+        "batch_size": 8
+      }
+    },
+    "nlp": {
+      "path": "D:\\PycharmProjects\\phd_research_code\\meisd_project\\data\\data_preparation\\data_preparation\\balanced datasets\\esconv_enhanced_nlp_augmentation_70percent_balanced.xlsx",
+      "sha256": "1c66d32601b7716af5f8b6d1aa0361ebdd321f6558a513ab727d4b49955b425b",
+      "text_column": "conversation",
+      "selection_rule": "multiset subtraction of authentic target-corpus instances",
+      "total_instances": 4738,
+      "transformed_instances": 2288,
+      "pairwise_metrics": {
+        "status": "unavailable",
+        "paired_instances": 0,
+        "source_column": null,
+        "reason": "no retained source_text column; references were not substituted"
+      },
+      "perplexity": {
+        "status": "computed",
+        "model": "gpt2",
+        "device": "cpu",
+        "predicted_tokens": 46369,
+        "max_length": 512,
+        "batch_size": 8
+      }
+    },
+    "nlp_llm": {
+      "path": "D:\\PycharmProjects\\phd_research_code\\meisd_project\\data\\data_preparation\\data_preparation\\balanced datasets\\esconv_enhanced_llm_nlp_augmentation_70percent_balanced.xlsx",
+      "sha256": "d6a3b1db001de2a09d22859d0894e9d4b36aee72d9442f3fd849b7ae66e4ae09",
+      "text_column": "conversation",
+      "selection_rule": "multiset subtraction of authentic target-corpus instances",
+      "total_instances": 4738,
+      "transformed_instances": 2288,
+      "pairwise_metrics": {
+        "status": "unavailable",
+        "paired_instances": 0,
+        "source_column": null,
+        "reason": "no retained source_text column; references were not substituted"
+      },
+      "perplexity": {
+        "status": "computed",
+        "model": "gpt2",
+        "device": "cpu",
+        "predicted_tokens": 168649,
+        "max_length": 512,
+        "batch_size": 8
+      }
+    }
+  }
+}
