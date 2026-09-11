@@ -1,0 +1,151 @@
+{
+  "generated_at_utc": "2026-09-11T10:54:21.493793+00:00",
+  "script": "D:\\PycharmProjects\\phd_research_code\\meisd_project\\official\\DA_and_transfer_learning\\recompute_transformation_quality.py",
+  "python": "3.13.9 | packaged by Anaconda, Inc. | (main, Oct 21 2025, 19:09:58) [MSC v.1929 64 bit (AMD64)]",
+  "platform": "Windows-11-10.0.26200-SP0",
+  "dependencies": {
+    "numpy": "2.4.0rc1",
+    "pandas": "2.3.3",
+    "scikit_learn": "1.8.0"
+  },
+  "configuration": {
+    "target_label_mapping": {
+      "low": [
+        1,
+        2
+      ],
+      "high": [
+        3,
+        4,
+        5
+      ]
+    },
+    "transformed_label_mapping": {
+      "0": "low",
+      "1": "high"
+    },
+    "tokenisation": "[A-Za-z]+(?:'[A-Za-z]+)?|\\d+(?:\\.\\d+)?",
+    "first_person_pronouns": [
+      "i",
+      "me",
+      "mine",
+      "my",
+      "myself",
+      "our",
+      "ours",
+      "ourselves",
+      "us",
+      "we"
+    ],
+    "keyword_extraction": {
+      "method": "mean TF-IDF within each target class",
+      "max_features": 50,
+      "stop_words": "english",
+      "ngram_range": [
+        1,
+        2
+      ],
+      "selected_keywords": 10,
+      "ranking": "descending mean TF-IDF; alphabetical tie-break"
+    },
+    "quality_score": {
+      "length": "max(0, 1 - abs(L_t - L_target) / L_target)",
+      "keyword": "min(1, K_m / 10)",
+      "pronoun": "1 for exact first-person-pronoun token presence; 0 otherwise",
+      "composite": "0.4 * Q_length + 0.4 * Q_keyword + 0.2 * Q_pronoun"
+    },
+    "standard_deviation": "sample standard deviation (ddof=1)",
+    "uniqueness": "case-sensitive exact-text uniqueness after whitespace normalisation"
+  },
+  "target_corpus": {
+    "path": "D:\\PycharmProjects\\phd_research_code\\meisd_project\\data\\data_preparation\\data_preparation\\balanced datasets\\esconv_both_parts.csv",
+    "sha256": "41de2a3768177ed6935b4d31da22b976220e1fbfbf1dd2dbe7ce8c96ab8449d5",
+    "text_column": "conversation",
+    "intensity_column": "label",
+    "stored_label_audit": {
+      "status": "unavailable",
+      "reason": "no stored target label column"
+    },
+    "patterns": {
+      "low": {
+        "instance_count": 837,
+        "mean_length": 104.01433691756273,
+        "keywords": [
+          "thank",
+          "yes",
+          "thanks",
+          "think",
+          "just",
+          "good",
+          "like",
+          "help",
+          "feel",
+          "time"
+        ]
+      },
+      "high": {
+        "instance_count": 1613,
+        "mean_length": 120.88096714197148,
+        "keywords": [
+          "just",
+          "yes",
+          "like",
+          "feel",
+          "really",
+          "think",
+          "don",
+          "good",
+          "time",
+          "know"
+        ]
+      }
+    }
+  },
+  "datasets": {
+    "rule": {
+      "path": "D:\\PycharmProjects\\phd_research_code\\meisd_project\\data\\data_preparation\\data_preparation\\balanced datasets\\esconv_enhanced_classical_augmentation_70percent_balanced.xlsx",
+      "sha256": "366ffc5c423f20195bfab78e6057e60b3c30b58bfbb00fe7dd2aedc6679e28a4",
+      "total_instances": 4738,
+      "transformed_instances": 2288,
+      "selection_rule": "multiset subtraction of authentic target-corpus instances",
+      "text_column": "conversation",
+      "label_column": "label"
+    },
+    "rule_llm": {
+      "path": "D:\\PycharmProjects\\phd_research_code\\meisd_project\\data\\data_preparation\\data_preparation\\balanced datasets\\esconv_enhanced_mixed_augmentation_70percent_balanced.xlsx",
+      "sha256": "08a9c4fce79b02fe2918d47ebb8a9b93aa9ff38411a5c462fa6e2a1a2a326c92",
+      "total_instances": 4738,
+      "transformed_instances": 2288,
+      "selection_rule": "multiset subtraction of authentic target-corpus instances",
+      "text_column": "conversation",
+      "label_column": "label"
+    },
+    "llm": {
+      "path": "D:\\PycharmProjects\\phd_research_code\\meisd_project\\data\\data_preparation\\data_preparation\\balanced datasets\\esconv_enhanced_llm_augmentation_70percent_balanced.xlsx",
+      "sha256": "2d82589a54a9cee3efbd070bfb40f161077a6e92e01aa321f4160b2e15a96aad",
+      "total_instances": 4738,
+      "transformed_instances": 2288,
+      "selection_rule": "multiset subtraction of authentic target-corpus instances",
+      "text_column": "conversation",
+      "label_column": "label"
+    },
+    "nlp": {
+      "path": "D:\\PycharmProjects\\phd_research_code\\meisd_project\\data\\data_preparation\\data_preparation\\balanced datasets\\esconv_enhanced_nlp_augmentation_70percent_balanced.xlsx",
+      "sha256": "1c66d32601b7716af5f8b6d1aa0361ebdd321f6558a513ab727d4b49955b425b",
+      "total_instances": 4738,
+      "transformed_instances": 2288,
+      "selection_rule": "multiset subtraction of authentic target-corpus instances",
+      "text_column": "conversation",
+      "label_column": "label"
+    },
+    "nlp_llm": {
+      "path": "D:\\PycharmProjects\\phd_research_code\\meisd_project\\data\\data_preparation\\data_preparation\\balanced datasets\\esconv_enhanced_llm_nlp_augmentation_70percent_balanced.xlsx",
+      "sha256": "d6a3b1db001de2a09d22859d0894e9d4b36aee72d9442f3fd849b7ae66e4ae09",
+      "total_instances": 4738,
+      "transformed_instances": 2288,
+      "selection_rule": "multiset subtraction of authentic target-corpus instances",
+      "text_column": "conversation",
+      "label_column": "label"
+    }
+  }
+}

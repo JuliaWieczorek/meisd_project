@@ -25,6 +25,7 @@ official/DA_and_transfer_learning/generate_basic_domain_statistics.py
 official/DA_and_transfer_learning/data_augmentation.py
 official/DA_and_transfer_learning/TextAugmentationEvaluator.py
 official/DA_and_transfer_learning/recompute_intrinsic_metrics.py
+official/DA_and_transfer_learning/recompute_transformation_quality.py
 official/DA_and_transfer_learning/binary_intensity_classification_LLM.py
 ```
 
@@ -43,6 +44,34 @@ intrinsic_metrics_report.md
 
 The manifest records input hashes, evaluated sample counts, selection rules,
 metric settings, reference availability, and the perplexity model status.
+
+For the dissertation's transformation-quality table, use
+`recompute_transformation_quality.py`. This analysis is separate from the
+historical evaluator and applies the declared target mapping (scores 1--2 are
+low; scores 3--5 are high). It evaluates only transformed source-domain rows,
+uses multiset subtraction when explicit provenance columns are unavailable,
+and implements the quality score as follows:
+
+```text
+Q_length  = max(0, 1 - abs(L_t - L_target) / L_target)
+Q_keyword = min(1, K_m / 10)
+Q_pronoun = 1 for exact first-person-pronoun token presence, otherwise 0
+Q          = 0.4 * Q_length + 0.4 * Q_keyword + 0.2 * Q_pronoun
+```
+
+The script writes:
+
+```text
+transformation_quality_summary.csv
+transformation_quality_per_sample.csv
+transformation_quality_manifest.json
+transformation_quality_report.md
+```
+
+The per-sample output retains text hashes and every score component. The
+manifest records input hashes, target-class counts, extracted keywords, target
+lengths, column selections, dependency versions, and the full scoring
+definition.
 
 ## Portability warning
 
