@@ -1,5 +1,9 @@
 # MEISD Emotion-Intensity Research Workspace
 
+## Dissertation relationship
+
+The augmentation and cross-dataset transfer experiments in this repository support Chapter 4, *Cross-Domain Transfer Learning through LLM-Guided Data Augmentation*, of the PhD dissertation *Knowledge Transfer for Emotion Intensity Prediction in Mental Health Support Dialogues*. The associated book chapter is listed below.
+
 Historical research workspace for emotion, emotion-intensity, sentiment,
 augmentation, and cross-dataset transfer experiments involving MEISD and
 ESConv.
